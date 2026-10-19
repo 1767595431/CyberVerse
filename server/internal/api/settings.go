@@ -41,9 +41,10 @@ type LiveKitSettings struct {
 }
 
 type ModelProviderSettings struct {
-	DashScopeAPIKey  string `json:"dashscope_api_key"`
-	OpenAIAPIKey     string `json:"openai_api_key"`
-	AtlasCloudAPIKey string `json:"atlascloud_api_key"`
+	DashScopeAPIKey        string `json:"dashscope_api_key"`
+	OpenAIAPIKey           string `json:"openai_api_key"`
+	AtlasCloudAPIKey       string `json:"atlascloud_api_key"`
+	CheaperInferenceAPIKey string `json:"cheaperinference_api_key"`
 }
 
 type LLMSettings struct {
@@ -136,6 +137,7 @@ var settingsFields = []settingsField{
 		return s.LLM.APIKey
 	}},
 	{"ATLASCLOUD_API_KEY", true, func(s *SettingsResponse) string { return s.ModelProviders.AtlasCloudAPIKey }},
+	{"CHEAPER_INFERENCE_API_KEY", true, func(s *SettingsResponse) string { return s.ModelProviders.CheaperInferenceAPIKey }},
 	{"GRPC_INFERENCE_ADDR", false, func(s *SettingsResponse) string { return s.Inference.GRPCAddr }},
 }
 
@@ -173,9 +175,10 @@ func (r *Router) handleGetSettings(w http.ResponseWriter, req *http.Request) {
 			APISecret: envOrDefault("LIVEKIT_API_SECRET", r.cfg.LiveKit.APISecret),
 		},
 		ModelProviders: ModelProviderSettings{
-			DashScopeAPIKey:  os.Getenv("DASHSCOPE_API_KEY"),
-			OpenAIAPIKey:     os.Getenv("OPENAI_API_KEY"),
-			AtlasCloudAPIKey: os.Getenv("ATLASCLOUD_API_KEY"),
+			DashScopeAPIKey:        os.Getenv("DASHSCOPE_API_KEY"),
+			OpenAIAPIKey:           os.Getenv("OPENAI_API_KEY"),
+			AtlasCloudAPIKey:       os.Getenv("ATLASCLOUD_API_KEY"),
+			CheaperInferenceAPIKey: os.Getenv("CHEAPER_INFERENCE_API_KEY"),
 		},
 		LLM: LLMSettings{
 			APIKey:      os.Getenv("OPENAI_API_KEY"),
@@ -203,6 +206,7 @@ func (r *Router) handleGetSettings(w http.ResponseWriter, req *http.Request) {
 	resp.ModelProviders.DashScopeAPIKey = maskSecret(resp.ModelProviders.DashScopeAPIKey)
 	resp.ModelProviders.OpenAIAPIKey = maskSecret(resp.ModelProviders.OpenAIAPIKey)
 	resp.ModelProviders.AtlasCloudAPIKey = maskSecret(resp.ModelProviders.AtlasCloudAPIKey)
+	resp.ModelProviders.CheaperInferenceAPIKey = maskSecret(resp.ModelProviders.CheaperInferenceAPIKey)
 	resp.LLM.APIKey = maskSecret(resp.LLM.APIKey)
 	writeJSON(w, http.StatusOK, resp)
 }
