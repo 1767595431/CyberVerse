@@ -178,6 +178,7 @@ export interface ModelProviderSettings {
   dashscope_api_key: string
   openai_api_key: string
   atlascloud_api_key: string
+  cheaperinference_api_key: string
 }
 
 export interface InferenceSettings {

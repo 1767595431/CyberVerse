@@ -53,6 +53,10 @@ def test_load_config_basic():
     assert atlas["plugin_class"] == "inference.plugins.llm.openai_plugin.OpenAILLMPlugin"
     assert atlas["base_url"] == "https://api.atlascloud.ai/v1"
     assert atlas["model"] == "deepseek-ai/deepseek-v4-flash"
+    cheaperinference = config["inference"]["llm"]["cheaperinference"]
+    assert cheaperinference["plugin_class"] == "inference.plugins.llm.openai_plugin.OpenAILLMPlugin"
+    assert cheaperinference["base_url"] == "https://api.cheaperinference.com/v1"
+    assert cheaperinference["model"] == "gpt-5.4-mini"
     assert "ws_url" not in config["inference"]["tts"]["qwen"]
     assert "ws_url" not in config["inference"]["asr"]["qwen"]
 

@@ -56,3 +56,9 @@ func TestDisplayComponentNameAtlas(t *testing.T) {
 		t.Fatalf("expected Atlas Cloud, got %q", got)
 	}
 }
+
+func TestDisplayComponentNameCheaperInference(t *testing.T) {
+	if got := displayComponentName("cheaperinference"); got != "Cheaper Inference" {
+		t.Fatalf("expected Cheaper Inference, got %q", got)
+	}
+}

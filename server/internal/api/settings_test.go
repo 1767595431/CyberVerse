@@ -13,10 +13,12 @@ func TestGetSettingsMasksSecrets(t *testing.T) {
 	const dashScopeKey = "sk-dashscope-super-secret-123456"
 	const openAIKey = "sk-openai-super-secret-123456"
 	const atlasCloudKey = "sk-atlascloud-super-secret-123456"
+	const cheaperInferenceKey = "ci-cheaperinference-super-secret-123456"
 	const liveKitSecret = "livekit-secret-value-123456"
 	t.Setenv("DASHSCOPE_API_KEY", dashScopeKey)
 	t.Setenv("OPENAI_API_KEY", openAIKey)
 	t.Setenv("ATLASCLOUD_API_KEY", atlasCloudKey)
+	t.Setenv("CHEAPER_INFERENCE_API_KEY", cheaperInferenceKey)
 	t.Setenv("LIVEKIT_API_SECRET", liveKitSecret)
 
 	r := newTestRouter()
@@ -43,17 +45,21 @@ func TestGetSettingsMasksSecrets(t *testing.T) {
 	if strings.Contains(w.Body.String(), atlasCloudKey) {
 		t.Error("GET /settings leaked ATLASCLOUD_API_KEY in full")
 	}
+	if strings.Contains(w.Body.String(), cheaperInferenceKey) {
+		t.Error("GET /settings leaked CHEAPER_INFERENCE_API_KEY in full")
+	}
 	if strings.Contains(w.Body.String(), liveKitSecret) {
 		t.Error("GET /settings leaked LIVEKIT_API_SECRET in full")
 	}
 
 	// Masked values must still be present so the UI knows the key is set.
 	for name, got := range map[string]string{
-		"dashscope_api_key":  resp.ModelProviders.DashScopeAPIKey,
-		"openai_api_key":     resp.ModelProviders.OpenAIAPIKey,
-		"atlascloud_api_key": resp.ModelProviders.AtlasCloudAPIKey,
-		"llm.api_key":        resp.LLM.APIKey,
-		"livekit.api_secret": resp.LiveKit.APISecret,
+		"dashscope_api_key":        resp.ModelProviders.DashScopeAPIKey,
+		"openai_api_key":           resp.ModelProviders.OpenAIAPIKey,
+		"atlascloud_api_key":       resp.ModelProviders.AtlasCloudAPIKey,
+		"cheaperinference_api_key": resp.ModelProviders.CheaperInferenceAPIKey,
+		"llm.api_key":              resp.LLM.APIKey,
+		"livekit.api_secret":       resp.LiveKit.APISecret,
 	} {
 		if !strings.Contains(got, "****") {
 			t.Errorf("%s not masked: %q", name, got)
