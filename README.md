@@ -278,7 +278,8 @@ server:
 3. **Go 日志**：`CyberVerse Server starting on 0.0.0.0:6006`  
 4. **浏览器控制台**：`[switch]` 日志（待机 / 回答片切换）；WS 是否连上同源  
 5. **Avatar 卡顿**：Inference 日志 **RTP**；参考 README 旧版 QA 或 [部署文档.md](./部署文档.md) 中的分辨率/帧率表  
-6. **改 config 后**：改 Avatar 参数 → **重启 inference**；改端口/CORS → **重启 Go**
+6. **改 config 后**：改 Avatar 参数 → **重启 inference**；改端口/CORS → **重启 Go**  
+7. **抖音弹幕已连接但列表为空**：多为 DyHub lightweight 采集僵死（`frameCount` 涨、`msgCount`/总线发布数不涨）。见 [live-danmaku/README.md § 故障排查](./live-danmaku/README.md#故障排查cyberverse-离线直播--dyhub)
 
 ---
 

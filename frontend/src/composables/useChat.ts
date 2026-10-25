@@ -1153,13 +1153,22 @@ export function useChat(sessionId: () => string) {
     platform?: string
   }) {
     if (snap.items?.length) {
-      danmakuFeed.value = snap.items.map((row) => ({
+      const incoming: DanmakuFeedItem[] = snap.items.map((row) => ({
         username: row.username || '观众',
         text: row.text,
         source: row.source || 'unknown',
         timestamp: row.timestamp,
         messageId: row.message_id,
       }))
+      const merged = new Map<string, DanmakuFeedItem>()
+      const keyOf = (item: DanmakuFeedItem) =>
+        item.messageId?.trim() || `${item.timestamp}:${item.username}:${item.text}`
+      for (const item of [...danmakuFeed.value, ...incoming]) {
+        merged.set(keyOf(item), item)
+      }
+      danmakuFeed.value = [...merged.values()]
+        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+        .slice(-120)
     }
     if (snap.status === 'connected' && snap.platform) {
       danmakuStatus.value = snap.platform

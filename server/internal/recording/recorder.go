@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,71 @@ func (r *VideoRecorder) resolveOutputDir(sessionDir string) string {
 	return filepath.Join(r.cfg.OutputDir, sessionDir)
 }
 
+func rgbFrameBytes(width, height int) int {
+	if width <= 0 || height <= 0 {
+		return 0
+	}
+	return width * height * 3
+}
+
+func rgbFrameCount(rgbChunks [][]byte, frameBytes int) int {
+	if frameBytes <= 0 {
+		return 0
+	}
+	n := 0
+	for _, chunk := range rgbChunks {
+		n += len(chunk) / frameBytes
+	}
+	return n
+}
+
+func lastRGBFrame(rgbChunks [][]byte, width, height int) []byte {
+	frameBytes := rgbFrameBytes(width, height)
+	if frameBytes <= 0 || len(rgbChunks) == 0 {
+		return nil
+	}
+	var tail []byte
+	for _, chunk := range rgbChunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		tail = append(tail, chunk...)
+	}
+	if len(tail) < frameBytes {
+		return nil
+	}
+	last := make([]byte, frameBytes)
+	copy(last, tail[len(tail)-frameBytes:])
+	return last
+}
+
+// padRGBChunksToAudioDuration duplicates the last frame so video length meets audio
+// before ffmpeg -shortest mux. LiveAct may emit fewer frames than TTS audio on short clips.
+func padRGBChunksToAudioDuration(rgbChunks [][]byte, width, height, fps int, pcm []byte, sampleRate int) [][]byte {
+	if len(rgbChunks) == 0 || len(pcm) == 0 || fps <= 0 || sampleRate <= 0 {
+		return rgbChunks
+	}
+	frameBytes := rgbFrameBytes(width, height)
+	if frameBytes <= 0 {
+		return rgbChunks
+	}
+	have := rgbFrameCount(rgbChunks, frameBytes)
+	audioSec := float64(len(pcm)/2) / float64(sampleRate)
+	want := int(math.Ceil(audioSec * float64(fps)))
+	if want <= have {
+		return rgbChunks
+	}
+	last := lastRGBFrame(rgbChunks, width, height)
+	if len(last) != frameBytes {
+		return rgbChunks
+	}
+	out := append([][]byte(nil), rgbChunks...)
+	for i := have; i < want; i++ {
+		out = append(out, append([]byte(nil), last...))
+	}
+	return out
+}
+
 // EncodeRGB24ToMP4 writes raw RGB24 frames plus optional mono PCM16 audio into an MP4.
 func EncodeRGB24ToMP4(outPath string, width, height, fps int, rgbChunks [][]byte, pcm []byte, sampleRate int, crf int) error {
 	if width <= 0 || height <= 0 || fps <= 0 {
@@ -38,6 +104,9 @@ func EncodeRGB24ToMP4(outPath string, width, height, fps int, rgbChunks [][]byte
 	}
 	if len(rgbChunks) == 0 {
 		return fmt.Errorf("recording: no rgb chunks to encode")
+	}
+	if len(pcm) > 0 {
+		rgbChunks = padRGBChunksToAudioDuration(rgbChunks, width, height, fps, pcm, sampleRate)
 	}
 	if crf <= 0 {
 		crf = 23

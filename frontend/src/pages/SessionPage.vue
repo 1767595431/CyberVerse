@@ -285,16 +285,17 @@ function formatDanmakuChatLine(item: DanmakuFeedItem): string {
   return item.text
 }
 
-function danmakuFeedItemKey(item: DanmakuFeedItem, index: number): string {
-  return item.messageId || `${item.timestamp}-${index}-${item.username}-${item.text}`
+function danmakuFeedItemKey(item: DanmakuFeedItem): string {
+  if (item.messageId?.trim()) return item.messageId.trim()
+  return `${item.timestamp}:${item.username}:${item.text}`
 }
 
 function mergeDanmakuFeedItems(...lists: DanmakuFeedItem[][]): DanmakuFeedItem[] {
   const map = new Map<string, DanmakuFeedItem>()
   for (const list of lists) {
-    list.forEach((item, index) => {
-      map.set(danmakuFeedItemKey(item, index), item)
-    })
+    for (const item of list) {
+      map.set(danmakuFeedItemKey(item), item)
+    }
   }
   return [...map.values()]
     .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
@@ -306,7 +307,7 @@ const offlineLiveChatMessages = computed((): ChatMessage[] => {
     return messages.value
   }
   const danmakuMsgs: ChatMessage[] = displayDanmakuFeed.value.map((item, index) => ({
-    id: `danmaku-${danmakuFeedItemKey(item, index)}`,
+    id: `danmaku-${danmakuFeedItemKey(item)}-${index}`,
     role: 'user',
     content: formatDanmakuChatLine(item),
     timestamp: item.timestamp || Date.now(),
@@ -391,8 +392,13 @@ function mapSnapItemsToFeed(rows: NonNullable<Awaited<ReturnType<typeof fetchDan
 }
 
 function syncDisplayDanmakuFromSnap(snap: Awaited<ReturnType<typeof fetchDanmakuFeed>>) {
-  const rows = snap.items ?? []
-  displayDanmakuFeed.value = mergeDanmakuFeedItems(mapSnapItemsToFeed(rows))
+  const fromSnap = mapSnapItemsToFeed(snap.items ?? [])
+  // Merge with WS buffer — do not replace display from HTTP poll (empty snap was wiping live danmaku).
+  displayDanmakuFeed.value = mergeDanmakuFeedItems(
+    displayDanmakuFeed.value,
+    danmakuFeed.value,
+    fromSnap,
+  )
   applyDanmakuFeedSnapshot(snap)
 }
 

@@ -107,6 +107,9 @@ func (r *Router) startSessionDanmaku(sessionID string, session *orchestrator.Ses
 	}
 	cfg := session.DanmakuConfigSnapshot()
 	log.Printf("danmaku connect start session=%s platform=%s", sessionID, cfg.Platform)
+	if r.danmakuScheduler != nil {
+		r.danmakuScheduler.Start(sessionID)
+	}
 	if r.danmakuRunner.Running(sessionID) {
 		log.Printf("danmaku connect skipped session=%s already running", sessionID)
 		if r.wsHub != nil {

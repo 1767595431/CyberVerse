@@ -94,3 +94,42 @@ await listener.close()
 | `likes.py` | `studio/likes.py` |
 | `engine_adapter.py` | `studio/engine.py`（完整队列/Vidu 逻辑） |
 | `app_room_integration.py` | `studio/app.py` 的 `room()`、`Studio.status()` |
+
+---
+
+## 故障排查（CyberVerse 离线直播 + DyHub）
+
+### 现象：界面显示「弹幕已连接」，但左侧弹幕列表始终为空
+
+CyberVerse 的「已连接」只表示 **Go 进程已连上 DyHub 的 WebSocket**，不保证 DyHub 仍在向总线推送新的 `chat` 事件。
+
+**典型根因：DyHub `lightweight` 采集会话僵死**
+
+- 房间状态仍为 `live`，`frameCount` 持续增加，但 **`msgCount` / 总线 `totalPublished` 长时间不变**（例如卡在几百条不再涨）。
+- 此时 WS 订阅 `types=chat` **收不到任何新弹幕**；Go 日志里只有 `danmaku douyin relay connected`，**没有** `danmaku chat session=...`。
+- `/api/v1/sessions/{id}/danmaku/feed` 的 `items` 为空，但 `relay_ws_open: true`。
+
+**快速自检**
+
+```bash
+# 1) DyHub 是否还在发布事件（totalPublished 应随直播弹幕增加）
+curl -s http://127.0.0.1:8757/api/stats | jq '.bus.totalPublished, .rooms'
+
+# 2) 直连 WS 10s 内是否出现 type=chat（替换 roomId）
+# python - websockets 订阅 ws://127.0.0.1:8757/ws?roomId=ROOM&types=chat
+
+# 3) Go 是否入库
+grep 'danmaku chat' /tmp/cyberverse-api.log | tail
+```
+
+**处理**
+
+1. 重启 DyHub（`runtime/dyhub` 下 `npm start`，默认 `DYHUB_COLLECTOR=lightweight`）。
+2. 会话页弹幕区 **停止 → 连接**（或刷新后重连），让 Go 重新 `connect` 房间并订阅 WS。
+3. 在 DyHub 控制台对该房间 **断开再连**（`POST /api/rooms/{roomId}/disconnect` 后 `connect`）。
+4. 若频繁僵死：考虑 `DYHUB_COLLECTOR=browser` + 可用 Chrome/Chromium；数据中心 IP 下 lightweight 更易异常。
+
+**勿与以下混淆**
+
+- 左下角「输入消息」走 **LLM 对话**，不会进入抖音弹幕 feed。
+- 右侧直播预览里的聊天是 **抖音 UI 模拟**，不等于 CyberVerse 左侧弹幕列表。

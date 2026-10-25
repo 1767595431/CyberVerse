@@ -286,6 +286,8 @@ func readDyhubChatWS(ctx context.Context, conn *websocket.Conn, onChat func(user
 		if userObj, ok := event["user"].(map[string]any); ok {
 			if n, ok := userObj["nickname"].(string); ok && strings.TrimSpace(n) != "" {
 				username = n
+			} else if n, ok := userObj["nickName"].(string); ok && strings.TrimSpace(n) != "" {
+				username = n
 			}
 		}
 		msgID := ""
