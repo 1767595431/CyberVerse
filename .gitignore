@@ -98,9 +98,17 @@ tmp_*.mp4
 models/SoulX-LiveAct/hls_output/
 models/SoulX-LiveAct/uploads/
 
-# Douyin DyHub relay (built binary + local runtime)
-runtime/dyhub/
-runtime/dyhub.log
+# Douyin DyHub relay (built binary, archives, logs — not source)
+runtime/
 
-# Optional: keep live-danmaku reference code tracked; ignore only local relay build
-# live-danmaku/ is tracked — do not add here unless you vendor DyHub into repo root
+# Editor / manual backups and duplicate docs
+*.bak
+*copy.md
+* copy.md
+
+# Local scratch media (not referenced by repo)
+idle_silence.wav
+/*.wav
+
+# Large downloaded archives
+*.tar.gz
