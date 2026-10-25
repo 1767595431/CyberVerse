@@ -39,13 +39,14 @@ type Scheduler struct {
 }
 
 type schedulerSession struct {
-	cancel        context.CancelFunc
-	loopStarted   bool
-	stopped       bool
-	kickScheduled bool
-	pending       []PendingMessage
-	replied       map[string]struct{}
-	mu            sync.Mutex
+	cancel            context.CancelFunc
+	loopStarted       bool
+	stopped           bool
+	kickScheduled     bool
+	idleActionsPaused bool
+	pending           []PendingMessage
+	replied           map[string]struct{}
+	mu                sync.Mutex
 }
 
 func NewScheduler(cb SchedulerCallbacks) *Scheduler {
@@ -225,9 +226,59 @@ func (s *Scheduler) tick(sessionID string, sess *schedulerSession) {
 	}
 
 	if s.cb.OnIdleAction != nil {
+		sess.mu.Lock()
+		paused := sess.idleActionsPaused
+		sess.mu.Unlock()
+		if paused {
+			return
+		}
 		log.Printf("danmaku scheduler: idle action session=%s", sessionID)
 		s.cb.OnIdleAction(sessionID)
 	}
+}
+
+// PauseIdleActions suppresses random idle-action ticks while a song overlay is active.
+func (s *Scheduler) PauseIdleActions(sessionID string) {
+	if s == nil || sessionID == "" {
+		return
+	}
+	sess := s.getOrCreateSession(sessionID)
+	sess.mu.Lock()
+	sess.idleActionsPaused = true
+	sess.mu.Unlock()
+}
+
+// IdleActionsPaused reports whether random idle-action ticks are suppressed (e.g. during singing).
+func (s *Scheduler) IdleActionsPaused(sessionID string) bool {
+	if s == nil || sessionID == "" {
+		return false
+	}
+	s.mu.Lock()
+	sess := s.sessions[sessionID]
+	s.mu.Unlock()
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	paused := sess.idleActionsPaused
+	sess.mu.Unlock()
+	return paused
+}
+
+// ResumeIdleActions re-enables random idle-action ticks after a song ends or is stopped.
+func (s *Scheduler) ResumeIdleActions(sessionID string) {
+	if s == nil || sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	sess := s.sessions[sessionID]
+	s.mu.Unlock()
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	sess.idleActionsPaused = false
+	sess.mu.Unlock()
 }
 
 // Stop ends the tick loop and drops queued danmaku for the session.

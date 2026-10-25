@@ -31,6 +31,8 @@ import { OFFLINE_LIVE_NAMED_ACTION_PROMPTS } from '../constants/offlineLiveActio
 import { OFFLINE_LIVE_IDLE_PROMPTS } from '../constants/offlineLiveIdlePrompts'
 import { buildOfflineLiveSingVideoTitle, suggestSingSongNameFromFileName } from '../utils/offlineLiveVideoTitle'
 import { pruneOfflineLiveLaunchJob } from '../utils/offlineLiveLaunchPreference'
+import { LOCAL_ONLY_DEPLOYMENT } from '../constants/localDeployment'
+import { filterLocalComponentOptions, isCloudAvatarBackend } from '../utils/localDeployment'
 
 const route = useRoute()
 const router = useRouter()
@@ -84,6 +86,9 @@ function selectIdlePreset(item: { labelKey: string; promptKey: string }) {
     promptKey: item.promptKey,
   }
   actionPrompt.value = t(item.promptKey)
+  if (inputType.value === 'text') {
+    scriptText.value = t('offlineVideo.defaultScript')
+  }
 }
 
 function selectActionPreset(item: {
@@ -121,6 +126,17 @@ function buildAutoVideoTitleForSubmit(): string | undefined {
     return buildOfflineLiveSingVideoTitle(singSongName.value) || undefined
   }
   return buildAutoVideoTitleFromPreset()
+}
+
+function resolveSubmitActionPrompt(): string {
+  if (inputType.value === 'sing') {
+    return actionPrompt.value.trim() || t('offlineVideo.defaultSingActionPrompt')
+  }
+  const trimmed = actionPrompt.value.trim()
+  if (trimmed) return trimmed
+  const preset = selectedPromptPreset.value
+  if (preset) return t(preset.promptKey).trim()
+  return ''
 }
 
 watch(actionPrompt, (value) => {
@@ -241,7 +257,7 @@ const ttsLanguageOptions = [
 ]
 
 const providerSelectOptions = (items: ComponentOption[]) =>
-  items.map(item => ({
+  filterLocalComponentOptions(items).map(item => ({
     label: item.name,
     value: item.id,
   }))
@@ -251,6 +267,9 @@ const isXunfeiCharacter = computed(() => store.current?.avatar_backend === 'xunf
 const isViduCharacter = computed(() => store.current?.avatar_backend === 'vidu')
 const isExternalAvatarCharacter = computed(() =>
   isBaiduXilingCharacter.value || isXunfeiCharacter.value || isViduCharacter.value,
+)
+const cloudAvatarBlocked = computed(() =>
+  LOCAL_ONLY_DEPLOYMENT && isCloudAvatarBackend(store.current?.avatar_backend),
 )
 const showSingDrive = computed(() => !isExternalAvatarCharacter.value)
 const showLocalTextTTSSettings = computed(() => !isBaiduXilingCharacter.value && inputType.value === 'text')
@@ -265,7 +284,14 @@ const localVideoOutputRows = computed(() => {
     }))
 })
 const showLocalVideoOutputSettings = computed(() => !isBaiduXilingCharacter.value && localVideoOutputRows.value.length > 0)
-const showOutputSettings = computed(() => isBaiduXilingCharacter.value || showLocalTextTTSSettings.value || showLocalVideoOutputSettings.value)
+const showLocalActionPromptSettings = computed(() =>
+  !isBaiduXilingCharacter.value && !isExternalAvatarCharacter.value && inputType.value !== 'sing',
+)
+const showOutputSettings = computed(() =>
+  isBaiduXilingCharacter.value
+  || showLocalTextTTSSettings.value
+  || showLocalVideoOutputSettings.value,
+)
 const hasActiveJobs = computed(() => jobs.value.some(job => job.status === 'queued' || job.status === 'running'))
 const totalJobPages = computed(() => Math.max(1, Math.ceil(jobs.value.length / JOBS_PER_PAGE)))
 const pagedJobs = computed(() => {
@@ -347,6 +373,7 @@ const singAccept = '.mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.wma,audio/mpeg,audio/m
 const isTTSPersonRequired = computed(() => isBaiduXilingCharacter.value && inputType.value === 'text')
 const isMissingTTSPerson = computed(() => isTTSPersonRequired.value && !ttsPerson.value.trim())
 const canGenerate = computed(() => {
+  if (cloudAvatarBlocked.value) return false
   if (submitting.value) return false
   if (isBaiduXilingCharacter.value && (!outputWidth.value || !outputHeight.value)) return false
   if (inputType.value === 'text') {
@@ -823,9 +850,7 @@ async function submitJob() {
       ttsPitch: ttsPitch.value,
       backgroundImageUrl: backgroundImageUrl.value.trim(),
       autoAnimoji: autoAnimoji.value,
-      actionPrompt: inputType.value === 'sing' && !actionPrompt.value.trim()
-        ? t('offlineVideo.defaultSingActionPrompt')
-        : actionPrompt.value.trim(),
+      actionPrompt: resolveSubmitActionPrompt(),
       title: buildAutoVideoTitleForSubmit(),
       songName: inputType.value === 'sing' ? singSongName.value.trim() : '',
     })
@@ -943,6 +968,12 @@ onUnmounted(() => {
       <div v-if="showLoading" class="py-24 text-center text-cv-text-secondary">{{ t('common.loading') }}</div>
 
       <template v-else-if="store.current">
+        <p
+          v-if="cloudAvatarBlocked"
+          class="rounded-cv-lg border border-cv-warning/30 bg-cv-warning/10 px-4 py-3 text-sm leading-6 text-cv-warning"
+        >
+          {{ t('localDeployment.cloudAvatarBlocked') }}
+        </p>
         <div class="grid gap-8 lg:grid-cols-[300px_minmax(0,1fr)]">
           <aside class="character-panel">
             <div class="avatar-shell">
@@ -1108,6 +1139,56 @@ onUnmounted(() => {
                 <p class="field-hint">{{ audioHint }}</p>
               </template>
 
+              <section v-if="showLocalActionPromptSettings" class="action-prompt-block">
+                <label class="action-prompt-label">{{ t('offlineVideo.actionPromptLabel') }}</label>
+                <input
+                  v-model="actionPrompt"
+                  type="text"
+                  class="action-prompt-input"
+                  :placeholder="t('offlineVideo.actionPromptPlaceholder')"
+                >
+                <div class="action-prompt-suggestions">
+                  <span class="action-prompt-suggestions-title">{{ t('offlineVideo.actionPromptSuggestionsTitle') }}</span>
+                  <div
+                    class="action-prompt-chip-row"
+                    :class="{ 'action-prompt-chip-row--locked': idlePromptSelectionLocked }"
+                  >
+                    <button
+                      v-for="item in idleActionPromptRefs"
+                      :key="item.promptKey"
+                      type="button"
+                      class="action-prompt-chip"
+                      :class="{ 'action-prompt-chip--active': isIdlePresetSelected(item) }"
+                      :disabled="idlePromptSelectionLocked"
+                      :title="t(item.promptKey)"
+                      @click="selectIdlePreset(item)"
+                    >
+                      {{ t(item.labelKey) }}
+                    </button>
+                  </div>
+                </div>
+                <div class="action-prompt-suggestions">
+                  <span class="action-prompt-suggestions-title">{{ t('offlineVideo.offlineLiveActionPromptsTitle') }}</span>
+                  <div
+                    class="action-prompt-chip-row"
+                    :class="{ 'action-prompt-chip-row--locked': actionPromptSelectionLocked }"
+                  >
+                    <button
+                      v-for="item in offlineLiveNamedActions"
+                      :key="item.promptKey"
+                      type="button"
+                      class="action-prompt-chip"
+                      :class="{ 'action-prompt-chip--active': isActionPresetSelected(item) }"
+                      :disabled="actionPromptSelectionLocked"
+                      :title="t(item.promptKey)"
+                      @click="selectActionPreset(item)"
+                    >
+                      {{ t(item.labelKey) }}
+                    </button>
+                  </div>
+                </div>
+              </section>
+
               <section v-if="showOutputSettings" class="output-settings">
                 <div class="settings-header">
                   <button
@@ -1120,57 +1201,6 @@ onUnmounted(() => {
                   </button>
                 </div>
                 <template v-if="outputSettingsExpanded">
-                  <div class="action-prompt-block">
-                    <label class="action-prompt-label">{{ t('offlineVideo.actionPromptLabel') }}</label>
-                    <input
-                      v-model="actionPrompt"
-                      type="text"
-                      class="action-prompt-input"
-                      :placeholder="t('offlineVideo.actionPromptPlaceholder')"
-                    >
-                    <template v-if="inputType !== 'sing'">
-                      <div class="action-prompt-suggestions">
-                        <span class="action-prompt-suggestions-title">{{ t('offlineVideo.actionPromptSuggestionsTitle') }}</span>
-                        <div
-                          class="action-prompt-chip-row"
-                          :class="{ 'action-prompt-chip-row--locked': idlePromptSelectionLocked }"
-                        >
-                          <button
-                            v-for="item in idleActionPromptRefs"
-                            :key="item.promptKey"
-                            type="button"
-                            class="action-prompt-chip"
-                            :class="{ 'action-prompt-chip--active': isIdlePresetSelected(item) }"
-                            :disabled="idlePromptSelectionLocked"
-                            :title="t(item.promptKey)"
-                            @click="selectIdlePreset(item)"
-                          >
-                            {{ t(item.labelKey) }}
-                          </button>
-                        </div>
-                      </div>
-                      <div class="action-prompt-suggestions">
-                        <span class="action-prompt-suggestions-title">{{ t('offlineVideo.offlineLiveActionPromptsTitle') }}</span>
-                        <div
-                          class="action-prompt-chip-row"
-                          :class="{ 'action-prompt-chip-row--locked': actionPromptSelectionLocked }"
-                        >
-                          <button
-                            v-for="item in offlineLiveNamedActions"
-                            :key="item.promptKey"
-                            type="button"
-                            class="action-prompt-chip"
-                            :class="{ 'action-prompt-chip--active': isActionPresetSelected(item) }"
-                            :disabled="actionPromptSelectionLocked"
-                            :title="t(item.promptKey)"
-                            @click="selectActionPreset(item)"
-                          >
-                            {{ t(item.labelKey) }}
-                          </button>
-                        </div>
-                      </div>
-                    </template>
-                  </div>
                   <div v-if="showLocalVideoOutputSettings" class="settings-section local-video-output-section">
                     <div class="settings-section-title-row settings-section-title-row--compact">
                       <h4 class="settings-section-title">{{ t('offlineVideo.videoOutputSettings') }}</h4>

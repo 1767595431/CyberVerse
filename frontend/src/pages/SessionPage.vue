@@ -24,11 +24,14 @@ import {
   triggerOfflineLiveAction,
   triggerOfflineLiveSong,
 } from '../services/api'
+import { orderClipsByUrls } from '../utils/offlineLiveClipOrder'
+import { offlineLiveOverlayShouldLoop } from '../utils/offlineLivePlayback'
 import { offlineLiveSongDisplayTitle } from '../utils/offlineLiveVideoTitle'
 import type { OfflineLiveActionClip } from '../types/offlineLive'
 import {
   clearSessionLaunchState,
   loadSessionLaunchState,
+  resolveLaunchIdleVideoUrls,
   saveSessionLaunchState,
   sessionLaunchStateFromQuery,
 } from '../utils/sessionLaunchState'
@@ -114,6 +117,19 @@ const idleStrategy = computed(() => launchState.value?.idle_strategy || 'cached_
 const isOfflineLiveSession = computed(() => launchState.value?.playback_mode === 'offline_live')
 const offlineLiveActions = computed(() => launchState.value?.offline_live_actions ?? [])
 const offlineLiveSongs = computed(() => launchState.value?.offline_live_songs ?? [])
+const offlineLiveIdleClips = computed((): OfflineLiveActionClip[] => {
+  const urls = launchState.value?.idle_video_urls ?? []
+  const clips = launchState.value?.offline_live_idle_clips ?? []
+  if (urls.length > 0 && clips.length > 0) {
+    return orderClipsByUrls(urls, clips)
+  }
+  if (clips.length > 0) return clips
+  return urls.map((url) => ({
+    id: url,
+    title: url,
+    url,
+  }))
+})
 const danmakuPlatform = computed(() => launchState.value?.danmaku_platform || 'none')
 const showDanmakuFeed = computed(() =>
   isOfflineLiveSession.value && danmakuPlatform.value !== '' && danmakuPlatform.value !== 'none',
@@ -331,6 +347,7 @@ const answerVideoProgressLabel = computed(() => {
 
 const activeOfflineLiveActionId = ref('')
 const activeOfflineLiveSongId = ref('')
+const activeOfflineLiveIdleId = ref('')
 
 watch(offlineLiveActionTitle, () => {
   const title = offlineLiveActionTitle.value.trim()
@@ -491,23 +508,47 @@ function invokeOfflineLiveAction(body: { action?: string; action_id?: string; cl
   })
 }
 
+function syncActiveIdleHighlightFromStandby(url: string) {
+  if (!url) return
+  const clip = offlineLiveIdleClips.value.find(item => item.url === url)
+  if (clip) {
+    activeOfflineLiveIdleId.value = clip.id
+  }
+}
+
+function onStandbySourceChange(url: string) {
+  syncActiveIdleHighlightFromStandby(url)
+}
+
+function switchOfflineLiveIdleClip(clip: OfflineLiveActionClip) {
+  activeOfflineLiveIdleId.value = clip.id
+  const player = videoPlayerRef.value as { queueStandbySwitch?: (url: string) => void } | null
+  player?.queueStandbySwitch?.(clip.url)
+}
+
 async function playOfflineLiveActionClip(clip: OfflineLiveActionClip) {
   activeOfflineLiveActionId.value = clip.id
+  activeOfflineLiveSongId.value = ''
+  const player = videoPlayerRef.value as { beginAnswerOverlay?: (url: string, loop: boolean) => void } | null
+  player?.beginAnswerOverlay?.(clip.url, false)
   requestOfflineLiveActionPlay({
     url: clip.url,
     actionId: clip.id,
     title: clip.title,
-  })
+  }, { immediate: true })
   void invokeOfflineLiveAction({ action: clip.title, action_id: clip.id })
 }
 
 function playOfflineLiveSongClip(clip: OfflineLiveActionClip) {
   activeOfflineLiveSongId.value = clip.id
+  activeOfflineLiveActionId.value = ''
+  const player = videoPlayerRef.value as { beginAnswerOverlay?: (url: string, loop: boolean) => void } | null
+  player?.beginAnswerOverlay?.(clip.url, true)
   requestOfflineLiveSongPlay({
     url: clip.url,
     songId: clip.id,
     title: clip.title,
-  })
+  }, { immediate: true })
   void triggerOfflineLiveSong(sessionId.value, { title: clip.title, song_id: clip.id }).catch((e) => {
     console.warn('offline live song trigger failed:', e)
   })
@@ -523,7 +564,13 @@ function stopOfflineLiveSongPlayback() {
 const offlineLiveOverlaySrc = computed(() =>
   isOfflineLiveSession.value ? (offlineLiveActionUrl.value || answerVideoUrl.value) : '',
 )
-const offlineLiveOverlayLoop = computed(() => false)
+const offlineLiveOverlayLoop = computed(() =>
+  offlineLiveOverlayShouldLoop(
+    offlineLiveOverlayKind.value,
+    offlineLiveOverlaySrc.value,
+    offlineLiveSongs.value.map(item => item.url),
+  ),
+)
 
 registerViduControlHandler((event) => {
   if (event.type === 'vidu_ready') {
@@ -1061,18 +1108,25 @@ watchEffect(() => {
   }
 })
 
-// Initialize idle video URLs from route query (if already cached at session creation)
-const launchIdleUrls = launchState.value?.idle_video_urls
-const launchIdleUrl = launchState.value?.idle_video_url || ''
+// Initialize idle video URLs from launch state (includes offline idle clip URLs as fallback).
 const idleImageUrl = ref(launchState.value?.idle_image_url || '')
 const voiceAgentVisualImage = computed(() => idleImageUrl.value.trim())
 const useCachedIdleVisual = computed(() =>
   idleStrategy.value === 'cached_video' || isOfflineLiveSession.value,
 )
-if (useCachedIdleVisual.value && launchIdleUrls && launchIdleUrls.length > 0) {
-  idleVideoUrls.value = launchIdleUrls
-} else if (useCachedIdleVisual.value && launchIdleUrl) {
-  idleVideoUrls.value = [launchIdleUrl]
+const launchIdleVideoUrls = resolveLaunchIdleVideoUrls(launchState.value)
+if (useCachedIdleVisual.value && launchIdleVideoUrls.length > 0) {
+  idleVideoUrls.value = launchIdleVideoUrls
+}
+watchEffect(() => {
+  if (!useCachedIdleVisual.value || idleVideoUrls.value.length > 0) return
+  const resolved = resolveLaunchIdleVideoUrls(launchState.value)
+  if (resolved.length > 0) {
+    idleVideoUrls.value = resolved
+  }
+})
+if (offlineLiveIdleClips.value.length > 0) {
+  activeOfflineLiveIdleId.value = offlineLiveIdleClips.value[0].id
 }
 
 // Standby MP4 failed to decode (404/HTML, corrupt file, etc.) — do not keep black layer over WebRTC.
@@ -1085,6 +1139,20 @@ function onStandbyMp4Failed() {
   standbyDecodeFailed.value = true
 }
 
+const hasStandbyVisual = computed(() => {
+  if (standbyDecodeFailed.value) {
+    return !!idleImageUrl.value.trim()
+  }
+  return idleVideoUrls.value.length > 0 || !!idleVideoUrl.value || !!idleImageUrl.value.trim()
+})
+
+const offlineLiveStandbyImageSrc = computed(() => {
+  if (!isOfflineLiveSession.value) return idleImageUrl.value
+  if (idleVideoUrls.value.length === 0) return idleImageUrl.value
+  if (standbyDecodeFailed.value) return idleImageUrl.value
+  return ''
+})
+
 // Switch to webrtc only when fresh frames are actually arriving.
 // The backend now delays avatar_status=speaking until the first video frame is
 // about to be published, so we no longer need the "frozen last frame" fallback
@@ -1094,15 +1162,13 @@ const displayMode = computed<'webrtc' | 'standby' | 'answer' | 'placeholder'>(()
   const lastFrameAt = debugState.value.lastVideoFrameAtMs
   const hasFreshRealtimeFrame = !!lastFrameAt && clockMs.value - lastFrameAt < 3000
   const hasRealtimeSize = !!videoElement.value?.videoWidth || !!debugState.value.network?.frameWidth
-  const hasStandbyVisual = !standbyDecodeFailed.value && (!!idleVideoUrl.value || !!idleImageUrl.value)
-
   if (isOfflineLiveSession.value) {
     let result: 'standby' | 'answer' | 'placeholder'
     let reason = ''
     if (offlineLiveActionUrl.value || answerVideoUrl.value) {
       result = 'answer'
       reason = offlineLiveActionUrl.value ? 'offline live action clip' : 'offline live answer clip'
-    } else if (hasStandbyVisual) {
+    } else if (hasStandbyVisual.value) {
       result = 'standby'
       reason = `offline live idle (${avatarStatus.value})`
     } else {
@@ -1130,7 +1196,7 @@ const displayMode = computed<'webrtc' | 'standby' | 'answer' | 'placeholder'>(()
 
   let result: 'webrtc' | 'standby' | 'placeholder'
   let reason = ''
-  if (hasStandbyVisual && avatarStatus.value !== 'speaking') {
+  if (hasStandbyVisual.value && avatarStatus.value !== 'speaking') {
     result = 'standby'
     reason = `avatarStatus=${avatarStatus.value}`
   } else if (hasFreshRealtimeFrame) {
@@ -1156,6 +1222,8 @@ const displayMode = computed<'webrtc' | 'standby' | 'answer' | 'placeholder'>(()
 function onAnswerVideoEnded() {
   if (isOfflineLiveSession.value) {
     handleOfflineLiveOverlayEnded()
+    const player = videoPlayerRef.value as { getStandbySrc?: () => string } | null
+    syncActiveIdleHighlightFromStandby(player?.getStandbySrc?.() ?? '')
     return
   }
   const player = videoPlayerRef.value as { advanceStandby?: () => void } | null
@@ -1166,9 +1234,18 @@ const isLocalVoiceAgentVisualActive = computed(() =>
   !isExternalAvatarSession.value
   && (launchState.value?.avatar_enabled === false || displayMode.value === 'placeholder')
 )
-const shouldShowVoiceAgentVisual = computed(() =>
-  !!voiceAgentVisualImage.value && (isLocalVoiceAgentVisualActive.value || externalAvatarFallbackActive.value)
-)
+const shouldShowVoiceAgentVisual = computed(() => {
+  // Offline live uses MP4 standby layers in VideoPlayer — do not cover them with a static portrait.
+  if (
+    isOfflineLiveSession.value
+    && !standbyDecodeFailed.value
+    && idleVideoUrls.value.length > 0
+  ) {
+    return false
+  }
+  return !!voiceAgentVisualImage.value
+    && (isLocalVoiceAgentVisualActive.value || externalAvatarFallbackActive.value)
+})
 const shouldShowAvatarFallbackBadge = computed(() => externalAvatarFallbackActive.value && shouldShowVoiceAgentVisual.value)
 
 watch(shouldShowAvatarFallbackBadge, (visible) => {
@@ -1199,11 +1276,29 @@ function handleAvatarFallbackGlobalPointerDown(event: PointerEvent) {
   showAvatarFallbackDetails.value = false
 }
 
+function warnOfflineLiveLaunchStateGaps() {
+  if (!isOfflineLiveSession.value) return
+  if (!launchState.value) {
+    console.warn('[offline_live] missing session launch state (sessionStorage). Re-open offline live config and start a new session.')
+    return
+  }
+  const idleCount = launchState.value.idle_video_urls?.length
+    ?? (launchState.value.idle_video_url ? 1 : 0)
+  if (idleCount === 0) {
+    console.warn('[offline_live] launch state has no idle videos; standby layer may be empty.')
+  }
+  if (offlineLiveActions.value.length === 0 && offlineLiveSongs.value.length === 0) {
+    console.warn('[offline_live] launch state has no action/song clips; toolbar playback will not work. Re-open offline live config and start a new session.')
+  }
+}
+
 // Auto-connect on mount using session params from query
 onMounted(async () => {
   if (queryLaunchState && Object.keys(route.query).length > 0) {
     void router.replace({ path: route.path })
   }
+
+  warnOfflineLiveLaunchStateGaps()
 
   if (isBaiduXilingSession.value) {
     window.addEventListener('storage', handleBaiduActiveSessionChange)
@@ -1448,11 +1543,12 @@ function micDockBarHeight(level: number): string {
         :display-mode="displayMode"
         :standby-src="idleVideoUrl"
         :standby-sources="idleVideoUrls"
-        :standby-image-src="idleImageUrl"
+        :standby-image-src="offlineLiveStandbyImageSrc"
         :answer-src="isOfflineLiveSession ? offlineLiveOverlaySrc : ''"
         :answer-loop="offlineLiveOverlayLoop"
         class="w-full flex-1 min-h-0"
         @standby-failed="onStandbyMp4Failed"
+        @standby-source-change="onStandbySourceChange"
         @answer-ended="onAnswerVideoEnded"
       />
       <div
@@ -1856,6 +1952,22 @@ function micDockBarHeight(level: number): string {
             <button type="button" class="offline-live-toolbar-clear" @click="handleClearChatPanel">
               {{ t('session.clear') }}
             </button>
+          </div>
+
+          <div v-if="offlineLiveIdleClips.length > 1" class="offline-live-toolbar-band">
+            <span class="offline-live-row-label">{{ t('offlineVideo.offlineLiveIdleSwitchLabel') }}</span>
+            <div class="offline-live-chip-scroll">
+              <button
+                v-for="clip in offlineLiveIdleClips"
+                :key="'idle-' + clip.id"
+                type="button"
+                class="offline-live-action-btn offline-live-idle-btn offline-live-action-btn--chip"
+                :class="{ 'offline-live-action-btn--active': activeOfflineLiveIdleId === clip.id && !offlineLiveOverlaySrc }"
+                @click="switchOfflineLiveIdleClip(clip)"
+              >
+                {{ clip.title }}
+              </button>
+            </div>
           </div>
 
           <div v-if="offlineLiveActions.length > 0" class="offline-live-toolbar-band">

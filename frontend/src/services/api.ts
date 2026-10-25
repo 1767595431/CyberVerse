@@ -121,6 +121,7 @@ export interface CreateSessionPipelineOptions {
   ttsModel?: string
   ttsVoice?: string
   idleVideoUrl?: string
+  idleVideoUrls?: string[]
   offlineLiveActions?: Array<{ id: string; title: string; url: string }>
   offlineLiveSongs?: Array<{ id: string; title: string; url: string }>
   danmakuPlatform?: 'none' | 'bilibili' | 'douyin' | string
@@ -145,6 +146,7 @@ export async function createSession(
   if (pipeline?.ttsModel) body.tts_model = pipeline.ttsModel
   if (pipeline?.ttsVoice) body.tts_voice = pipeline.ttsVoice
   if (pipeline?.idleVideoUrl) body.idle_video_url = pipeline.idleVideoUrl
+  if (pipeline?.idleVideoUrls?.length) body.idle_video_urls = pipeline.idleVideoUrls
   if (pipeline?.offlineLiveActions?.length) body.offline_live_actions = pipeline.offlineLiveActions
   if (pipeline?.offlineLiveSongs?.length) body.offline_live_songs = pipeline.offlineLiveSongs
   if (pipeline?.danmakuPlatform && pipeline.danmakuPlatform !== 'none') {
@@ -327,7 +329,9 @@ export async function createOfflineVideo(characterId: string, input: CreateOffli
   if (typeof input.ttsPitch === 'number') form.append('tts_pitch', String(input.ttsPitch))
   if (input.backgroundImageUrl) form.append('background_image_url', input.backgroundImageUrl)
   if (typeof input.autoAnimoji === 'boolean') form.append('auto_animoji', String(input.autoAnimoji))
-  if (input.actionPrompt) form.append('actionPrompt', input.actionPrompt)
+  if (typeof input.actionPrompt === 'string' && input.actionPrompt.length > 0) {
+    form.append('actionPrompt', input.actionPrompt)
+  }
   if (input.title) form.append('title', input.title)
   if (input.songName) form.append('song_name', input.songName)
   const res = await fetch(`${API_BASE}/characters/${encodeURIComponent(characterId)}/offline-videos`, {

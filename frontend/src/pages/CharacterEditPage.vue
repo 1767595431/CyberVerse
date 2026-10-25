@@ -10,6 +10,8 @@ import { useCharacterStore } from '../stores/characters'
 import type { AgentExtensionConfig, AvatarBackend, BaiduXilingCharacterConfig, CharacterComponents, CharacterForm, ComponentOption, ComponentsResponse, ImageInfo, XunfeiAvatarConfig } from '../types'
 import { DOUBAO_TTS_VOICE_OPTIONS, GEMINI_LIVE_VOICE_OPTIONS, GROK_VOICE_OPTIONS, OPENAI_REALTIME_VOICE_OPTIONS, OPENAI_VOICE_OPTIONS, QWEN_OMNI_VOICE_OPTIONS, QWEN_TTS_MODEL_OPTIONS, QWEN_TTS_VOICE_OPTIONS, VOICE_OPTIONS } from '../types'
 import { uploadAvatar, getCharacterImages, deleteCharacterImage, activateCharacterImage, testCharacterVoice, getComponents, getBaiduXilingFigure, getXunfeiAvatar } from '../services/api'
+import { LOCAL_ONLY_DEPLOYMENT } from '../constants/localDeployment'
+import { filterLocalComponentOptions, normalizeAvatarBackendForDeployment } from '../utils/localDeployment'
 import {
   DEFAULT_COSYVOICE_V3_VOICE,
   DEFAULT_DOUBAO_TTS_VOICE,
@@ -106,7 +108,9 @@ const visibleImages = computed(() =>
 const isBaiduXilingAvatar = computed(() => form.value.avatar_backend === 'baidu_xiling')
 const isLocalAvatar = computed(() => form.value.avatar_backend === 'local_image')
 const isViduAvatar = computed(() => form.value.avatar_backend === 'vidu')
-const usesUploadedAvatar = computed(() => isLocalAvatar.value || isViduAvatar.value)
+const usesUploadedAvatar = computed(() =>
+  LOCAL_ONLY_DEPLOYMENT || isLocalAvatar.value || isViduAvatar.value,
+)
 const baiduFigureId = computed({
   get: () => form.value.baidu_xiling?.figure_id || '',
   set: (value: string) => {
@@ -181,12 +185,16 @@ const avatarBackendModel = computed({
   get: () => form.value.avatar_backend,
   set: (value: string) => selectAvatarBackend(normalizeAvatarBackend(value)),
 })
-const avatarBackendOptions = computed(() => [
-  { label: t('characterEdit.localAvatar'), value: 'local_image' },
-  { label: t('characterEdit.baiduDigitalHuman'), value: 'baidu_xiling' },
-  { label: t('characterEdit.xunfeiDigitalHuman'), value: 'xunfei' },
-  { label: t('characterEdit.viduS1'), value: 'vidu' },
-])
+const avatarBackendOptions = computed(() => {
+  const options = [
+    { label: t('characterEdit.localAvatar'), value: 'local_image' },
+    { label: t('characterEdit.baiduDigitalHuman'), value: 'baidu_xiling' },
+    { label: t('characterEdit.xunfeiDigitalHuman'), value: 'xunfei' },
+    { label: t('characterEdit.viduS1'), value: 'vidu' },
+  ]
+  return LOCAL_ONLY_DEPLOYMENT ? options.filter(item => item.value === 'local_image') : options
+})
+const cloudAvatarMigrationNotice = ref(false)
 const trimmedCustomVoiceType = computed(() => customVoiceType.value.trim())
 const selectedTTS = computed(() => form.value.components?.tts || DEFAULT_COMPONENTS.tts)
 const selectedTTSModel = computed(() => form.value.components?.tts_model || selectedComponent('tts')?.model || '')
@@ -233,7 +241,7 @@ const omniModelLabel = computed(() => {
   return 'Doubao Realtime'
 })
 const providerSelectOptions = (items: ComponentOption[]) =>
-  items.map(item => ({
+  filterLocalComponentOptions(items).map(item => ({
     label: item.name,
     value: item.id,
   }))
@@ -389,10 +397,7 @@ function normalizeMode(mode?: string): CharacterForm['mode'] {
 }
 
 function normalizeAvatarBackend(backend?: string): AvatarBackend {
-  if (backend === 'baidu_xiling') return 'baidu_xiling'
-  if (backend === 'xunfei') return 'xunfei'
-  if (backend === 'vidu') return 'vidu'
-  return 'local_image'
+  return normalizeAvatarBackendForDeployment(backend)
 }
 
 function emptyBaiduXilingConfig(figureId = ''): BaiduXilingCharacterConfig {
@@ -830,8 +835,8 @@ onMounted(async () => {
           description: c.description,
           avatar_image: c.avatar_image,
           avatar_backend: normalizeAvatarBackend(c.avatar_backend),
-          baidu_xiling: c.baidu_xiling ? { ...c.baidu_xiling } : null,
-          xunfei: c.xunfei ? { ...emptyXunfeiConfig(), ...c.xunfei } : null,
+          baidu_xiling: LOCAL_ONLY_DEPLOYMENT ? null : (c.baidu_xiling ? { ...c.baidu_xiling } : null),
+          xunfei: LOCAL_ONLY_DEPLOYMENT ? null : (c.xunfei ? { ...emptyXunfeiConfig(), ...c.xunfei } : null),
           offline_video_tts: c.offline_video_tts ? { ...c.offline_video_tts } : null,
           use_face_crop: c.use_face_crop,
           image_mode: c.image_mode || 'fixed',
@@ -845,6 +850,9 @@ onMounted(async () => {
           system_prompt: c.system_prompt,
           tags: [...c.tags],
           agent_extensions: normalizeAgentExtensions(c.agent_extensions),
+        }
+        if (LOCAL_ONLY_DEPLOYMENT && c.avatar_backend && c.avatar_backend !== 'local_image') {
+          cloudAvatarMigrationNotice.value = true
         }
         if (isViduAvatar.value) {
           if (!isQwenOmniVoiceType(form.value.voice_type)) {
@@ -969,6 +977,11 @@ async function save() {
     payload.components = normalizeComponents(payload.components)
     payload.agent_extensions = normalizeAgentExtensions(payload.agent_extensions)
     payload.avatar_backend = normalizeAvatarBackend(payload.avatar_backend)
+    if (LOCAL_ONLY_DEPLOYMENT) {
+      payload.avatar_backend = 'local_image'
+      payload.baidu_xiling = null
+      payload.xunfei = null
+    }
     payload.voice_provider = payload.avatar_backend === 'vidu'
       ? 'qwen_omni'
       : payload.mode === 'omni'
@@ -1057,10 +1070,11 @@ const pageTitle = computed(() =>
         <div class="mb-4 rounded-cv-lg border border-cv-border bg-cv-surface p-3">
           <div class="mb-2 text-[12px] font-medium text-cv-text-muted">{{ t('characterEdit.avatarBackend') }}</div>
           <CvSelect
+            v-if="!LOCAL_ONLY_DEPLOYMENT"
             v-model="avatarBackendModel"
             :options="avatarBackendOptions"
           />
-          <p v-if="isLocalAvatar" class="mt-2 text-[11px] leading-5 text-cv-text-muted">
+          <p v-if="LOCAL_ONLY_DEPLOYMENT || isLocalAvatar" class="mt-2 text-[11px] leading-5 text-cv-text-muted">
             {{ t('characterEdit.localAvatarBackendHint') }}
           </p>
           <p v-else-if="isViduAvatar" class="mt-2 text-[11px] leading-5 text-cv-text-muted">
@@ -1085,6 +1099,12 @@ const pageTitle = computed(() =>
           <p v-else class="mt-2 text-[11px] leading-5 text-cv-text-muted">
             {{ t('characterEdit.xunfeiAvatarBackendHint') }}
           </p>
+          <p
+            v-if="cloudAvatarMigrationNotice"
+            class="mt-2 rounded-cv-md border border-cv-warning/30 bg-cv-warning/10 px-3 py-2 text-[11px] leading-5 text-cv-warning"
+          >
+            {{ t('localDeployment.cloudAvatarMigration') }}
+          </p>
         </div>
 
         <AvatarUpload
@@ -1103,7 +1123,7 @@ const pageTitle = computed(() =>
           @activate-image="handleActivateImage"
         />
 
-        <div v-else-if="isBaiduXilingAvatar" class="rounded-cv-lg border border-cv-border bg-cv-surface p-4">
+        <div v-else-if="!LOCAL_ONLY_DEPLOYMENT && isBaiduXilingAvatar" class="rounded-cv-lg border border-cv-border bg-cv-surface p-4">
           <div class="grid grid-cols-[minmax(0,1fr)_82px] gap-2">
             <label class="flex h-11 overflow-hidden rounded-cv-md border border-cv-border bg-cv-elevated transition-all focus-within:border-cv-accent focus-within:shadow-[0_0_0_2px_rgba(59,130,246,0.15)]">
               <span class="flex h-full w-[74px] shrink-0 items-center border-r border-cv-border px-3 text-[13px] font-medium text-cv-text-secondary">{{ t('characterEdit.baiduFigureId') }}</span>
@@ -1145,7 +1165,7 @@ const pageTitle = computed(() =>
           </div>
         </div>
 
-        <div v-else class="rounded-cv-lg border border-cv-border bg-cv-surface p-4">
+        <div v-else-if="!LOCAL_ONLY_DEPLOYMENT" class="rounded-cv-lg border border-cv-border bg-cv-surface p-4">
           <div class="space-y-3">
             <div>
               <div class="grid grid-cols-[minmax(0,1fr)_82px] gap-2">
@@ -1196,7 +1216,7 @@ const pageTitle = computed(() =>
           v-if="isEdit"
           type="button"
           class="cv-pi-button cv-pi-button--compact mt-4 w-full"
-          @click="router.push(isViduAvatar ? `/launch/${characterId}/live` : `/launch/${characterId}`)"
+          @click="router.push(`/launch/${characterId}`)"
         >
           {{ t('characterEdit.openWorkspace') }}
         </button>
@@ -1240,7 +1260,7 @@ const pageTitle = computed(() =>
 
         <!-- Section 2: Component configuration -->
         <section class="bg-cv-surface border border-cv-border rounded-cv-lg p-6">
-          <template v-if="isViduAvatar">
+          <template v-if="!LOCAL_ONLY_DEPLOYMENT && isViduAvatar">
             <h2 class="text-base font-semibold text-cv-text mb-5">{{ t('characterEdit.viduVoiceConfig') }}</h2>
             <label class="block">
               <span class="text-[13px] font-medium text-cv-text-secondary">{{ t('characterEdit.lineVoice') }}</span>

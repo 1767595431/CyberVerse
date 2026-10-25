@@ -28,6 +28,7 @@ export interface SessionLaunchState {
   livekit_token?: string
   idle_video_url?: string
   idle_video_urls?: string[]
+  offline_live_idle_clips?: OfflineLiveActionClip[]
   offline_live_actions?: OfflineLiveActionClip[]
   offline_live_songs?: OfflineLiveActionClip[]
   danmaku_platform?: string
@@ -155,6 +156,9 @@ export function loadSessionLaunchState(sessionId: string): SessionLaunchState | 
     livekit_token: parsed.livekit_token,
     idle_video_url: parsed.idle_video_url,
     idle_video_urls: Array.isArray(parsed.idle_video_urls) ? parsed.idle_video_urls : undefined,
+    offline_live_idle_clips: Array.isArray(parsed.offline_live_idle_clips)
+      ? parsed.offline_live_idle_clips
+      : undefined,
     offline_live_actions: Array.isArray(parsed.offline_live_actions) ? parsed.offline_live_actions : undefined,
     offline_live_songs: Array.isArray(parsed.offline_live_songs) ? parsed.offline_live_songs : undefined,
     danmaku_platform: typeof parsed.danmaku_platform === 'string' ? parsed.danmaku_platform : undefined,
@@ -170,6 +174,19 @@ export function clearSessionLaunchState(sessionId: string): void {
   const storage = getSessionStorage()
   if (!storage || !sessionId) return
   storage.removeItem(storageKey(sessionId))
+}
+
+/** Standby MP4 URLs for the player (launch list, single URL, or offline idle clips). */
+export function resolveLaunchIdleVideoUrls(state: SessionLaunchState | null | undefined): string[] {
+  if (!state) return []
+  const listed = (state.idle_video_urls ?? []).map((url) => url.trim()).filter(Boolean)
+  if (listed.length > 0) return listed
+  const single = state.idle_video_url?.trim()
+  if (single) return [single]
+  const fromClips = (state.offline_live_idle_clips ?? [])
+    .map((clip) => clip.url?.trim())
+    .filter((url): url is string => Boolean(url))
+  return fromClips
 }
 
 export function sessionLaunchStateFromQuery(

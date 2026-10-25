@@ -31,6 +31,15 @@ function defaultSettings(): Settings {
   }
 }
 
+/** Persisted for API compatibility; cloud platform sections are hidden in local-only deployment. */
+function settingsPayloadForSave(data: Settings): Settings {
+  const normalized = normalizeSettings(data)
+  normalized.livekit = { url: '', api_key: '', api_secret: '' }
+  normalized.model_providers.atlascloud_api_key = ''
+  normalized.model_providers.cheaperinference_api_key = ''
+  return normalized
+}
+
 function normalizeSettings(data?: LegacySettings): Settings {
   const defaults = defaultSettings()
   return {
@@ -65,7 +74,7 @@ onMounted(async () => {
 async function save() {
   saving.value = true
   try {
-    await store.save(form.value)
+    await store.save(settingsPayloadForSave(form.value))
     router.push('/characters')
   } catch (e) {
     console.error('Save failed:', e)
@@ -126,32 +135,6 @@ async function test() {
           </label>
         </section>
 
-        <!-- LiveKit -->
-        <section class="bg-cv-surface border border-cv-border rounded-cv-lg p-6">
-          <h3 class="text-sm font-semibold text-cv-text mb-4">LiveKit (WebRTC)</h3>
-          <label class="block mb-3">
-            <span class="text-[13px] text-cv-text-secondary">URL</span>
-            <input v-model="form.livekit.url" placeholder="wss://your-livekit-server.com"
-                   class="mt-1.5 w-full h-[42px] bg-cv-elevated border border-cv-border rounded-cv-md px-4 text-sm text-cv-text placeholder:text-cv-text-muted focus:border-cv-accent focus:outline-none transition-all" />
-          </label>
-          <div class="grid grid-cols-2 gap-4">
-            <label class="block">
-              <span class="text-[13px] text-cv-text-secondary">API Key</span>
-              <input v-model="form.livekit.api_key" class="mt-1.5 w-full h-[42px] bg-cv-elevated border border-cv-border rounded-cv-md px-4 text-sm text-cv-text focus:border-cv-accent focus:outline-none transition-all" />
-            </label>
-            <label class="block">
-              <span class="text-[13px] text-cv-text-secondary">API Secret</span>
-              <div class="relative mt-1.5">
-                <input v-model="form.livekit.api_secret" :type="showTokens['lk_secret'] ? 'text' : 'password'"
-                       class="w-full h-[42px] bg-cv-elevated border border-cv-border rounded-cv-md px-4 pr-10 text-sm text-cv-text focus:border-cv-accent focus:outline-none transition-all" />
-                <button @click="toggleShow('lk_secret')" class="absolute right-3 top-1/2 -translate-y-1/2 text-cv-text-muted hover:text-cv-text cursor-pointer text-xs">
-                  {{ showTokens['lk_secret'] ? t('common.hide') : t('common.show') }}
-                </button>
-              </div>
-            </label>
-          </div>
-        </section>
-
         <!-- Qwen / DashScope -->
         <section class="bg-cv-surface border border-cv-border rounded-cv-lg p-6">
           <h3 class="text-sm font-semibold text-cv-text mb-4">Qwen / DashScope</h3>
@@ -185,44 +168,6 @@ async function test() {
               />
               <button @click="toggleShow('openai_key')" class="absolute right-3 top-1/2 -translate-y-1/2 text-cv-text-muted hover:text-cv-text cursor-pointer text-xs">
                 {{ showTokens['openai_key'] ? t('common.hide') : t('common.show') }}
-              </button>
-            </div>
-          </label>
-        </section>
-
-        <!-- Atlas Cloud -->
-        <section class="bg-cv-surface border border-cv-border rounded-cv-lg p-6">
-          <h3 class="text-sm font-semibold text-cv-text mb-4">Atlas Cloud</h3>
-          <label class="block">
-            <span class="text-[13px] text-cv-text-secondary">API Key</span>
-            <div class="relative mt-1.5">
-              <input
-                v-model="form.model_providers.atlascloud_api_key"
-                :type="showTokens['atlascloud_key'] ? 'text' : 'password'"
-                placeholder="sk-..."
-                class="w-full h-[42px] bg-cv-elevated border border-cv-border rounded-cv-md px-4 pr-10 text-sm text-cv-text placeholder:text-cv-text-muted focus:border-cv-accent focus:outline-none transition-all"
-              />
-              <button @click="toggleShow('atlascloud_key')" class="absolute right-3 top-1/2 -translate-y-1/2 text-cv-text-muted hover:text-cv-text cursor-pointer text-xs">
-                {{ showTokens['atlascloud_key'] ? t('common.hide') : t('common.show') }}
-              </button>
-            </div>
-          </label>
-        </section>
-
-        <!-- Cheaper Inference -->
-        <section class="bg-cv-surface border border-cv-border rounded-cv-lg p-6">
-          <h3 class="text-sm font-semibold text-cv-text mb-4">Cheaper Inference</h3>
-          <label class="block">
-            <span class="text-[13px] text-cv-text-secondary">API Key</span>
-            <div class="relative mt-1.5">
-              <input
-                v-model="form.model_providers.cheaperinference_api_key"
-                :type="showTokens['cheaperinference_key'] ? 'text' : 'password'"
-                placeholder="ci_live_..."
-                class="w-full h-[42px] bg-cv-elevated border border-cv-border rounded-cv-md px-4 pr-10 text-sm text-cv-text placeholder:text-cv-text-muted focus:border-cv-accent focus:outline-none transition-all"
-              />
-              <button @click="toggleShow('cheaperinference_key')" class="absolute right-3 top-1/2 -translate-y-1/2 text-cv-text-muted hover:text-cv-text cursor-pointer text-xs">
-                {{ showTokens['cheaperinference_key'] ? t('common.hide') : t('common.show') }}
               </button>
             </div>
           </label>

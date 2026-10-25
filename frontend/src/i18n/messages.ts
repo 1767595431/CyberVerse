@@ -30,6 +30,10 @@ export const baseMessages = {
       notConnected: '未连接',
       emptyDash: '—',
     },
+    localDeployment: {
+      cloudAvatarMigration: '当前部署仅支持本地 LiveAct 形象。已移除云上数字人配置，请上传本地照片后保存。',
+      cloudAvatarBlocked: '该角色仍绑定云上数字人平台，本部署不支持。请在角色编辑中上传本地形象并保存后再试。',
+    },
     landing: {
       protocol: 'city gateway protocol',
       voiceOnline: 'voice online',
@@ -254,8 +258,11 @@ export const baseMessages = {
       offlineLiveTtsOmniBadge: 'Qwen Omni',
       offlineLiveGenerating: '正在生成回答视频…',
       offlineLiveSelectIdle: '选择待机视频',
-      offlineLiveSelectIdleHint: '从本角色「视频管理」选择 1 段待机循环成片。标题需以「待机-」开头（如：待机-正常播报）。',
+      offlineLiveSelectIdleHint: '从本角色「视频管理」多选待机循环成片，开播后按选择顺序轮流播放；播放中切换会等当前片播完再切。标题需以「待机-」开头（如：待机-正常播报）。',
       offlineLiveIdleSelectedOne: '已选 1 段待机',
+      offlineLiveIdleSelectedCount: '已选 {count} 段待机视频',
+      offlineLiveIdleQueueHint: '待机按选择顺序轮播；播放中点其它待机会先播完当前片，再播所选，然后继续本轮未播完的待机。',
+      offlineLiveIdleSwitchLabel: '待机',
       offlineLiveNoIdle: '暂无可用待机视频。请先到视频管理用语音驱动生成待机片。',
       offlineLiveNoIdleFiltered: '暂无「待机-」前缀的成片。请在视频管理把标题改为以「待机-」开头。',
       offlineLiveNoActionFiltered: '暂无「动作-」前缀的成片。请在视频管理把标题改为以「动作-」开头（如：动作-喝水）。',
@@ -315,27 +322,27 @@ export const baseMessages = {
       offlineLiveNamedActionCoquettish: '撒娇',
       offlineLiveNamedActionCoquettishPrompt:
         '面向镜头，先说话，再双手放胸前微微嘟嘴撒娇，然后看向镜头。',
-      offlineLiveNamedActionMildAngry: '小情绪生气',
+      offlineLiveNamedActionMildAngry: '假装生气',
       offlineLiveNamedActionMildAngryPrompt:
         '面向镜头，先说话，再略生气噘嘴，缓和后面向镜头。',
       offlineLiveNamedActionDrinkWaterScript:
-        '跟你们聊得太开心啦，嗓子都有点干干的，姐姐先喝口水润一润，马上回来陪你们，不许趁我不在偷偷跑掉哦。',
+        '跟你聊得太投入了，嗓子有点干，我去喝口水，马上就回来，你不许偷偷溜走哦。',
       offlineLiveNamedActionPutOnHatScript:
-        '糟糕，今天头发有点不听话，姐姐戴个小帽子整理一下，这样是不是看起来更乖一点？要好好看着我呀。',
+        '今天头发有点乱，我戴顶帽子整理一下，这样好看吗？你要一直看着我。',
       offlineLiveNamedActionHeartScript:
-        '收到你们的礼物啦，心里暖暖的，送你们一个大大的比心，今天也要开开心心的，姐姐一直在呢。',
+        '看到你的留言啦，我也想你，给你比个大心，今天也要开开心心的，我在这儿陪着你呢。',
       offlineLiveNamedActionPeaceScript:
-        '耶，小目标达成啦！谢谢你们陪姐姐到现在，比个耶我们一起庆祝，下次也要一起加油，好不好？',
+        '太好啦，达成啦！多亏有你陪着我，比个耶，咱们下次还要一起，好不好？',
       offlineLiveNamedActionEatWatermelonScript:
-        '夏天就要吃瓜瓜呀，这一口超甜的！你们也要记得多喝水、别中暑，姐姐会担心你的，知道吗？',
+        '这口西瓜好甜啊，夏天就是要这样。你那边热不热？记得多喝水，别让我担心。',
       offlineLiveNamedActionHeadTiltCuteScript:
-        '嗯？你们在弹幕里说啥悄悄话呀，让姐姐歪头想想……算啦，先卖个萌，乖，点个关注下次还能找到我。',
+        '嗯？你刚才说什么来着，让我想想……算啦，我先卖个萌，记得常来找我。',
       offlineLiveNamedActionOneEyeCuteScript:
-        '悄悄眨个眼，只给此刻在直播间的你看哦，这可是专属小福利，好啦，姐姐继续认真陪你们啦。',
+        '嘿，只给你一个人眨眨眼，别人看不到，这是留给你的专属哦。',
       offlineLiveNamedActionCoquettishScript:
-        '你们都不理姐姐了，我要撒娇咯，再多发几条弹幕陪陪我嘛，不然我会小小闹别扭的，快来哄哄我呀。',
+        '你怎么半天不说话嘛，人家会孤单的，快来陪我聊几句，哄哄我好不好？',
       offlineLiveNamedActionMildAngryScript:
-        '哼，刚才是谁说姐姐划水的，我有一点点小生气啦，不过你们这么可爱，说点好听的我就原谅你们，下不为例哦。',
+        '哼，你刚才那话我可听到了，我假装生气给你看……好啦，你说点好听的，我就当没听见。',
       offlineLiveVideoFromManager: '视频管理',
       offlineLiveIdleOnlyFromManager: '仅显示当前角色在视频管理中的已完成成片；按标题前缀「待机-」「动作-」「唱歌-」分别筛选。',
       actionPromptLabel: '动作提示词（可选）',
@@ -650,6 +657,10 @@ export const baseMessages = {
       notConnected: 'Not connected',
       emptyDash: '—',
     },
+    localDeployment: {
+      cloudAvatarMigration: 'This deployment only supports local LiveAct avatars. Cloud digital-human settings were removed—upload a local photo and save.',
+      cloudAvatarBlocked: 'This character is still tied to a cloud avatar platform, which this deployment does not support. Upload a local avatar in character edit and save first.',
+    },
     landing: {
       protocol: 'city gateway protocol',
       voiceOnline: 'voice online',
@@ -874,8 +885,11 @@ export const baseMessages = {
       offlineLiveTtsOmniBadge: 'Qwen Omni',
       offlineLiveGenerating: 'Generating answer video…',
       offlineLiveSelectIdle: 'Choose idle video',
-      offlineLiveSelectIdleHint: 'Pick one standby loop from Video Manager. Title must start with “待机-” (e.g. 待机-Normal loop).',
+      offlineLiveSelectIdleHint: 'Pick multiple standby loops from Video Manager; they rotate in click order. Mid-play switches wait until the current clip ends. Titles must start with “待机-”.',
       offlineLiveIdleSelectedOne: '1 standby clip selected',
+      offlineLiveIdleSelectedCount: '{count} standby clip(s) selected',
+      offlineLiveIdleQueueHint: 'Standby clips rotate in selection order; switching mid-play finishes the current clip first, then plays your pick, then remaining clips this round.',
+      offlineLiveIdleSwitchLabel: 'Standby',
       offlineLiveNoIdle: 'No idle videos yet. Generate standby clips in Offline mode with audio drive.',
       offlineLiveNoIdleFiltered: 'No clips with the “待机-” prefix. Rename titles in Video Manager to start with “待机-”.',
       offlineLiveNoActionFiltered: 'No clips with the “动作-” prefix. Rename titles to start with “动作-” (e.g. 动作-Drink water).',
@@ -935,27 +949,27 @@ export const baseMessages = {
       offlineLiveNamedActionCoquettish: 'Coquettish',
       offlineLiveNamedActionCoquettishPrompt:
         'Facing the camera, speak first, then pout cutely with hands at chest, look at the camera.',
-      offlineLiveNamedActionMildAngry: 'Mild annoyance',
+      offlineLiveNamedActionMildAngry: 'Playful pout',
       offlineLiveNamedActionMildAngryPrompt:
         'Facing the camera, speak first, then show mild annoyance and pout, soften and face the camera.',
       offlineLiveNamedActionDrinkWaterScript:
-        'We have been chatting so happily my throat is a little dry—let me take a sip, I will be right back with you, do not sneak away while I am gone, okay?',
+        'I got so into talking with you—my throat is dry. I will grab a sip and come right back, okay? Do not sneak off on me.',
       offlineLiveNamedActionPutOnHatScript:
-        'Oops, my hair is being silly today—let me put on this hat and tidy up, do I look a bit sweeter now? Keep your eyes on me, alright?',
+        'My hair is a mess today—let me fix it with this hat. Do I look good? Keep your eyes on me.',
       offlineLiveNamedActionHeartScript:
-        'I got your gifts and my heart feels so warm—here is a big heart for you, stay happy today, I am right here with you.',
+        'I saw your message—I miss you too. Here is a big heart for you. Stay happy; I am right here with you.',
       offlineLiveNamedActionPeaceScript:
-        'Yay, we hit a little goal together! Thanks for staying with me—peace sign to celebrate, let us cheer for the next one too, deal?',
+        'We did it! Thanks for sticking with me—peace sign! Let us do the next one together, yeah?',
       offlineLiveNamedActionEatWatermelonScript:
-        'Summer means yummy watermelon—this bite is so sweet! Drink enough water and stay cool out there, I would worry about you, you know?',
+        'This watermelon is so sweet—perfect summer. Is it hot where you are? Drink water so I do not worry.',
       offlineLiveNamedActionHeadTiltCuteScript:
-        'Hmm, what are you whispering in chat? Let me tilt my head and think… okay fine, cute mode on—be good and follow so you can find me again.',
+        'Hmm, what did you just say? Let me think… never mind, cute face for you—come see me again soon.',
       offlineLiveNamedActionOneEyeCuteScript:
-        'A little secret wink just for you here in the stream—special treat only if you are watching—alright, back to keeping you company.',
+        'Hey—a wink just for you, nobody else gets this one. It is your little secret.',
       offlineLiveNamedActionCoquettishScript:
-        'You are leaving me all alone in chat—I am going to pout a little, send a few more messages and keep me company, come coax me, please?',
+        'You have been quiet forever—I feel lonely. Talk to me a little and coax me, okay?',
       offlineLiveNamedActionMildAngryScript:
-        'Hmph, who said I was slacking? I am a tiny bit upset—but you are too adorable, say something sweet and I will forgive you, just this once.',
+        'Hmph, I heard that—fine, I will pout for you… okay, say something sweet and I will pretend I did not hear it.',
       offlineLiveVideoFromManager: 'Video Manager',
       offlineLiveIdleOnlyFromManager: 'Only completed clips for this character; filtered by title prefix “待机-”, “动作-”, or “唱歌-”.',
       actionPromptLabel: 'Action prompt (optional)',

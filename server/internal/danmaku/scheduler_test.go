@@ -59,6 +59,26 @@ func TestSchedulerIdleWhenQueueEmpty(t *testing.T) {
 	}
 }
 
+func TestSchedulerIdlePausedWhileSong(t *testing.T) {
+	idle := 0
+	s := NewScheduler(SchedulerCallbacks{
+		OnIdleAction: func(_ string) {
+			idle++
+		},
+	})
+	s.Start("sess-pause")
+	s.PauseIdleActions("sess-pause")
+	s.tick("sess-pause", s.getOrCreateSession("sess-pause"))
+	if idle != 0 {
+		t.Fatalf("expected no idle while paused, got %d", idle)
+	}
+	s.ResumeIdleActions("sess-pause")
+	s.tick("sess-pause", s.getOrCreateSession("sess-pause"))
+	if idle != 1 {
+		t.Fatalf("expected 1 idle after resume, got %d", idle)
+	}
+}
+
 func TestSchedulerDoesNotReplyTwice(t *testing.T) {
 	replies := 0
 	s := NewScheduler(SchedulerCallbacks{

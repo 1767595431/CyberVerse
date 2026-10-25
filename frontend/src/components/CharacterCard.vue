@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import type { Character } from '../types'
+import { LOCAL_ONLY_DEPLOYMENT } from '../constants/localDeployment'
 import { formatVoiceTypeDisplay } from '../utils/voice'
 
 const router = useRouter()
@@ -23,21 +24,21 @@ const externalAvatarLabel = computed(() =>
       : t('characterCard.baiduDigitalHuman')
 )
 const externalAvatarId = computed(() => isXunfei.value ? xunfeiAvatarId.value : baiduFigureId.value)
-const coverImage = computed(() =>
-  isVidu.value
-    ? (props.character.active_image
+const coverImage = computed(() => {
+  if (!LOCAL_ONLY_DEPLOYMENT && isExternalAvatar.value) {
+    if (isVidu.value) {
+      return props.character.active_image
         ? `/api/v1/characters/${props.character.id}/images/${encodeURIComponent(props.character.active_image)}`
-        : props.character.avatar_image)
-    : isExternalAvatar.value
-    ? (
-        isXunfei.value
-          ? (props.character.xunfei?.thumbnail_url || props.character.xunfei?.source_image_url || '')
-          : (props.character.baidu_xiling?.thumbnail_url || props.character.baidu_xiling?.source_image_url || '')
-      )
-    : props.character.active_image
-      ? `/api/v1/characters/${props.character.id}/images/${encodeURIComponent(props.character.active_image)}`
-      : props.character.avatar_image
-)
+        : props.character.avatar_image
+    }
+    return isXunfei.value
+      ? (props.character.xunfei?.thumbnail_url || props.character.xunfei?.source_image_url || '')
+      : (props.character.baidu_xiling?.thumbnail_url || props.character.baidu_xiling?.source_image_url || '')
+  }
+  return props.character.active_image
+    ? `/api/v1/characters/${props.character.id}/images/${encodeURIComponent(props.character.active_image)}`
+    : props.character.avatar_image
+})
 
 // Generate a gradient from character name hash
 function nameToGradient(name: string): string {
@@ -49,7 +50,7 @@ function nameToGradient(name: string): string {
 }
 
 function launch() {
-  router.push(isVidu.value ? `/launch/${props.character.id}/live` : `/launch/${props.character.id}`)
+  router.push(`/launch/${props.character.id}`)
 }
 
 function edit() {
@@ -65,7 +66,7 @@ function edit() {
       <div class="w-full h-full" :style="{ background: coverImage ? undefined : nameToGradient(character.name) }">
         <img v-if="coverImage" :src="coverImage" :alt="character.name" class="w-full h-full object-cover object-top" />
         <div
-          v-else-if="isExternalAvatar"
+          v-else-if="!LOCAL_ONLY_DEPLOYMENT && isExternalAvatar"
           class="flex h-full flex-col items-center justify-center px-6 text-center"
         >
           <div class="rounded-cv-sm border border-cv-accent/30 bg-cv-accent/10 px-2 py-1 text-[11px] font-medium text-cv-accent">

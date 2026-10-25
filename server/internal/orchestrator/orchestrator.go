@@ -1686,6 +1686,11 @@ func (o *Orchestrator) setAvatarFromCharacterImage(ctx context.Context, sessionI
 	o.avatarMu.Lock()
 	defer o.avatarMu.Unlock()
 
+	// Live sessions should not inherit the last offline-video action prompt (e.g. drink water).
+	if err := WriteLiveActDynamicPrompt(""); err != nil {
+		return fmt.Errorf("reset liveact action prompt for live session: %w", err)
+	}
+
 	if err := o.inference.SetAvatar(ctx, sessionID, imageData, format); err != nil {
 		if resetErr := o.setDefaultAvatarLocked(ctx, sessionID); resetErr != nil {
 			return fmt.Errorf("set avatar from image %q (%d bytes): %w; default avatar reset failed: %v", imageFilename, len(imageData), err, resetErr)
@@ -1758,6 +1763,10 @@ func (o *Orchestrator) EnsureIdleVideo(ctx context.Context, characterID string) 
 	// while we are still collecting frames.
 	o.avatarMu.Lock()
 	defer o.avatarMu.Unlock()
+
+	if err := WriteLiveActDynamicPrompt(""); err != nil {
+		return "", fmt.Errorf("reset liveact action prompt for idle video: %w", err)
+	}
 
 	jobID := fmt.Sprintf("idle-%s-%d", characterID, time.Now().UnixNano())
 	if err := o.inference.SetAvatar(ctx, jobID, imageData, format); err != nil {

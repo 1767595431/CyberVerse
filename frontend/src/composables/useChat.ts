@@ -6,6 +6,7 @@ import {
   getTaskEvents,
   listSessionTasks,
   sendMessage,
+  triggerOfflineLiveSong,
   type AgentTask,
   type AgentTaskEvent,
 } from '../services/api'
@@ -126,6 +127,8 @@ export function useChat(sessionId: () => string) {
   const offlineLiveActionUrl = ref('')
   const offlineLiveActionTitle = ref('')
   const currentOfflineLiveOverlay = ref<OfflineLiveOverlayClip | null>(null)
+  /** While true, WS random actions queue instead of interrupting (song mode). */
+  const suppressRandomIdleActions = ref(false)
   /** Action / singing clips waiting to play (FIFO). */
   const pendingOfflineLiveMedia = ref<OfflineLiveMediaQueueItem[]>([])
   /** Offline-live answer clips waiting to play, sorted by turn_seq ascending. */
@@ -649,20 +652,32 @@ export function useChat(sessionId: () => string) {
 
         case 'offline_live_action': {
           if (data.clear) {
-            if (currentOfflineLiveOverlay.value?.kind === 'action') {
-              handleOfflineLiveOverlayEnded()
-            }
+            stopCurrentOfflineLiveOverlayPlayback()
             break
           }
           const url = readString(data.url)
           const actionId = readString(data.action_id)
           const title = readString(data.title)
           if (!url) break
+          const current = currentOfflineLiveOverlay.value
+          if (current && (current.kind === 'action' || current.kind === 'sing') && current.url === url) {
+            break
+          }
+          const actionItem: OfflineLiveMediaQueueItem = {
+            kind: 'action',
+            url,
+            actionId: actionId || url,
+            title: title || actionId,
+          }
+          if (current?.kind === 'sing' || suppressRandomIdleActions.value) {
+            enqueueOfflineLiveMedia(actionItem)
+            break
+          }
           requestOfflineLiveActionPlay({
             url,
             actionId: actionId || url,
             title: title || actionId,
-          })
+          }, { immediate: true })
           break
         }
 
@@ -703,11 +718,15 @@ export function useChat(sessionId: () => string) {
           const songId = readString(data.song_id)
           const title = readString(data.title)
           if (!url) break
+          const current = currentOfflineLiveOverlay.value
+          if (current?.kind === 'sing' && current.url === url) {
+            break
+          }
           requestOfflineLiveSongPlay({
             url,
             songId: songId || url,
             title: title || songId,
-          })
+          }, { immediate: true })
           break
         }
 
@@ -919,6 +938,7 @@ export function useChat(sessionId: () => string) {
     danmakuStatus.value = ''
     turnVideoProgress.value = null
     currentOfflineLiveOverlay.value = null
+    suppressRandomIdleActions.value = false
     answerVideoUrl.value = ''
     answerTurnSeq.value = 0
     offlineLiveActionUrl.value = ''
@@ -1000,37 +1020,85 @@ export function useChat(sessionId: () => string) {
     pendingOfflineLiveMedia.value = [...pendingOfflineLiveMedia.value, item]
   }
 
-  function requestOfflineLiveActionPlay(clip: { url: string; actionId: string; title: string }) {
-    enqueueOfflineLiveMedia({
+  function startOfflineLiveOverlayImmediate(item: OfflineLiveMediaQueueItem) {
+    if (item.kind === 'sing') {
+      pendingOfflineLiveMedia.value = pendingOfflineLiveMedia.value.filter(entry => entry.kind !== 'sing')
+    } else {
+      pendingOfflineLiveMedia.value = []
+    }
+    // Do not clear refs to empty between clips — that triggers VideoPlayer fade-out / autoplay loss.
+    startOfflineLiveOverlay(item)
+  }
+
+  function requestOfflineLiveActionPlay(
+    clip: { url: string; actionId: string; title: string },
+    options?: { immediate?: boolean },
+  ) {
+    const item: OfflineLiveMediaQueueItem = {
       kind: 'action',
       url: clip.url,
       actionId: clip.actionId,
       title: clip.title,
-    })
+    }
+    if (options?.immediate) {
+      startOfflineLiveOverlayImmediate(item)
+      return
+    }
+    enqueueOfflineLiveMedia(item)
   }
 
-  function requestOfflineLiveSongPlay(clip: { url: string; songId: string; title: string }) {
-    enqueueOfflineLiveMedia({
+  function requestOfflineLiveSongPlay(
+    clip: { url: string; songId: string; title: string },
+    options?: { immediate?: boolean },
+  ) {
+    const item: OfflineLiveMediaQueueItem = {
       kind: 'sing',
       url: clip.url,
       songId: clip.songId,
       title: clip.title,
-    })
+    }
+    if (options?.immediate) {
+      suppressRandomIdleActions.value = true
+      startOfflineLiveOverlayImmediate(item)
+      return
+    }
+    enqueueOfflineLiveMedia(item)
+  }
+
+  /** Stop the active overlay clip in UI state; queue handoff runs on VideoPlayer `answerEnded` only. */
+  function stopCurrentOfflineLiveOverlayPlayback() {
+    if (!currentOfflineLiveOverlay.value) return
+    syncOfflineLiveOverlayRefs(null)
+    currentOfflineLiveOverlay.value = null
   }
 
   function stopOfflineLiveSong() {
     pendingOfflineLiveMedia.value = pendingOfflineLiveMedia.value.filter(item => item.kind !== 'sing')
+    suppressRandomIdleActions.value = false
     if (currentOfflineLiveOverlay.value?.kind !== 'sing') {
       return
     }
-    currentOfflineLiveOverlay.value = null
-    syncOfflineLiveOverlayRefs(null)
-    tryStartNextOfflineLiveOverlay()
+    stopCurrentOfflineLiveOverlayPlayback()
   }
 
-  function handleOfflineLiveOverlayEnded() {
-    currentOfflineLiveOverlay.value = null
+  function handleOfflineLiveOverlayEnded(options?: { resumeIdleActions?: boolean }) {
+    // Do not null currentOfflineLiveOverlay before tryStartNext — that briefly clears overlay kind
+    // while parent URLs are unchanged and can flip answerLoop false on the same src.
+    const wasSing = currentOfflineLiveOverlay.value?.kind === 'sing'
     tryStartNextOfflineLiveOverlay()
+    if (options?.resumeIdleActions ?? wasSing) {
+      resumeOfflineLiveIdleActionsAfterSong()
+    }
+  }
+
+  /** Tell server danmaku scheduler to resume random idle actions (song ended / error). */
+  function resumeOfflineLiveIdleActionsAfterSong() {
+    suppressRandomIdleActions.value = false
+    const sid = sessionId()
+    if (!sid) return
+    void triggerOfflineLiveSong(sid, { stop: true }).catch((e) => {
+      console.warn('[useChat] resume idle actions after song failed:', e)
+    })
   }
 
   const offlineLiveOverlayKind = computed(() => currentOfflineLiveOverlay.value?.kind ?? null)
@@ -1100,7 +1168,7 @@ export function useChat(sessionId: () => string) {
 
   function clearAnswerVideo() {
     if (currentOfflineLiveOverlay.value) {
-      handleOfflineLiveOverlayEnded()
+      stopCurrentOfflineLiveOverlayPlayback()
       return
     }
     answerVideoUrl.value = ''

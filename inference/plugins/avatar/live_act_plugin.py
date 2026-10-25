@@ -331,6 +331,7 @@ class LiveActAvatarPlugin(AvatarPlugin):
         self._block_offload = bool(config.params.get("block_offload", False))
         self._mean_memory = bool(config.params.get("mean_memory", False))
         self._default_prompt = config.params.get("default_prompt", "一个人在说话")
+        self._base_default_prompt = self._default_prompt
 
         # Derived constants
         self._frame_num = (sum(self.BLKSZ_LST) - 1) * self.VAE_STRIDE[0] + 1  # 53
@@ -829,8 +830,10 @@ class LiveActAvatarPlugin(AvatarPlugin):
             device=device, dtype=torch.bfloat16,
         )
 
-        # T5 encode default prompt
         t5_dev = "cpu" if self._t5_cpu else device
+        # New avatar identity must re-read the on-disk prompt (do not reuse cache).
+        self._dynamic_prompt_cache = None
+        self._apply_dynamic_prompt_from_file(t5_dev, device)
         with torch.no_grad():
             self._context = [
                 self._text_encoder(texts=self._default_prompt, device=t5_dev)[0]
@@ -840,6 +843,32 @@ class LiveActAvatarPlugin(AvatarPlugin):
         # Reset streaming state for new identity
         self._reset_streaming_state()
         self._avatar_initialized = True
+
+    def _apply_dynamic_prompt_from_file(self, t5_dev, cuda_device) -> None:
+        import os as _os
+
+        _pf = "/root/autodl-tmp/dynamic_prompt.txt"
+        try:
+            _np = ""
+            if _os.path.exists(_pf):
+                with open(_pf, "r", encoding="utf-8") as _f:
+                    _np = _f.read().strip()
+            if not _np:
+                self._dynamic_prompt_cache = None
+                self._default_prompt = self._base_default_prompt
+                return
+            if _np == getattr(self, "_dynamic_prompt_cache", None):
+                return
+            self._dynamic_prompt_cache = _np
+            self._default_prompt = _np
+            with torch.no_grad():
+                self._context = [
+                    self._text_encoder(texts=self._default_prompt, device=t5_dev)[0]
+                    .to(cuda_device, dtype=torch.bfloat16)
+                ]
+            logger.info(f"[DynamicPrompt] action prompt updated: {_np}")
+        except Exception as _e:
+            logger.warning(f"[DynamicPrompt] failed: {_e}")
 
     # ── Streaming generation ──────────────────────────────────────────────
 
@@ -876,23 +905,8 @@ class LiveActAvatarPlugin(AvatarPlugin):
                     logger.warning("LiveAct avatar not initialized, skipping")
                     return
 
-                import os as _os
-                _pf = "/root/autodl-tmp/dynamic_prompt.txt"
-                try:
-                    if _os.path.exists(_pf):
-                        _np = open(_pf, "r", encoding="utf-8").read().strip()
-                        if _np and _np != getattr(self, "_dynamic_prompt_cache", None):
-                            self._dynamic_prompt_cache = _np
-                            self._default_prompt = _np
-                            t5_dev2 = "cpu" if self._t5_cpu else self._device
-                            with torch.no_grad():
-                                self._context = [
-                                    self._text_encoder(texts=self._default_prompt, device=t5_dev2)[0]
-                                    .to(self._device, dtype=torch.bfloat16)
-                                ]
-                            logger.info(f"[DynamicPrompt] action prompt updated: {_np}")
-                except Exception as _e:
-                    logger.warning(f"[DynamicPrompt] failed: {_e}")
+                t5_dev2 = "cpu" if self._t5_cpu else self._device
+                self._apply_dynamic_prompt_from_file(t5_dev2, self._device)
 
                 # Decode incoming audio to 16kHz float32
                 tgt_sr = 16000

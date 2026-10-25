@@ -37,6 +37,7 @@ type offlineVideoJob struct {
 	Provider        string `json:"provider,omitempty"`
 	InputType       string `json:"input_type"`
 	Text            string `json:"text,omitempty"`
+	ActionPrompt    string `json:"action_prompt,omitempty"`
 	Status          string `json:"status"`
 	Stage           string `json:"stage,omitempty"`
 	Message         string `json:"message,omitempty"`
@@ -63,15 +64,17 @@ type offlineVideoJobResponse struct {
 }
 
 type offlineVideoRunInput struct {
-	JobID             string
-	CharacterID       string
-	ImageData         []byte
-	ImageFormat       string
-	Text              string
-	Audio             *orchestrator.OfflineAudioInput
-	TTSConfig         inference.TTSConfig
-	OutputPath        string
-	BackingAudioPath  string
+	JobID            string
+	CharacterID      string
+	InputType        string
+	ImageData        []byte
+	ImageFormat      string
+	Text             string
+	ActionPrompt     string
+	Audio            *orchestrator.OfflineAudioInput
+	TTSConfig        inference.TTSConfig
+	OutputPath       string
+	BackingAudioPath string
 }
 
 type updateOfflineVideoRequest struct {
@@ -230,14 +233,22 @@ func (r *Router) handleCreateOfflineVideo(w http.ResponseWriter, req *http.Reque
 	} else if title == "" {
 		title = defaultOfflineVideoTitle()
 	}
+	ap := strings.TrimSpace(req.FormValue("actionPrompt"))
+	if ap == "" {
+		ap = media.ResolveOfflineLiveActionPromptFromTitle(title)
+	}
+	if ap == "" && inputType == "sing" {
+		ap = media.DefaultSingActionPrompt
+	}
 	job := &offlineVideoJob{
-		ID:          jobID,
-		CharacterID: characterID,
-		Title:       title,
-		Provider:    "local_avatar",
-		InputType:   inputType,
-		Text:        text,
-		Status:      "queued",
+		ID:           jobID,
+		CharacterID:  characterID,
+		Title:        title,
+		Provider:     "local_avatar",
+		InputType:    inputType,
+		Text:         text,
+		ActionPrompt: ap,
+		Status:       "queued",
 		Stage:       "queued",
 		Message:     "Queued for offline generation",
 		Progress:    0,
@@ -249,21 +260,18 @@ func (r *Router) handleCreateOfflineVideo(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	// LiveAct reads /root/autodl-tmp/dynamic_prompt.txt on each generation chunk (no inference restart).
-	ap := strings.TrimSpace(req.FormValue("actionPrompt"))
-	if ap == "" && inputType == "sing" {
-		ap = media.DefaultSingActionPrompt
-	}
 	if ap != "" {
-		_ = os.WriteFile("/root/autodl-tmp/dynamic_prompt.txt", []byte(ap), 0644)
+		_ = os.WriteFile(filepath.Join(jobDir, "action_prompt.txt"), []byte(ap), 0644)
 	}
 
 	runInput := offlineVideoRunInput{
 		JobID:            jobID,
 		CharacterID:      characterID,
+		InputType:        inputType,
 		ImageData:        imageData,
 		ImageFormat:      imageFormat,
 		Text:             text,
+		ActionPrompt:     ap,
 		Audio:            audio,
 		TTSConfig:        ttsConfig,
 		OutputPath:       filepath.Join(jobDir, "output.mp4"),
@@ -449,6 +457,14 @@ func (r *Router) handleDeleteOfflineVideo(w http.ResponseWriter, req *http.Reque
 }
 
 func (r *Router) runOfflineVideoJob(in offlineVideoRunInput) {
+	actionPrompt := strings.TrimSpace(in.ActionPrompt)
+	if actionPrompt == "" && strings.TrimSpace(in.OutputPath) != "" {
+		if data, err := os.ReadFile(filepath.Join(filepath.Dir(in.OutputPath), "action_prompt.txt")); err == nil {
+			actionPrompt = strings.TrimSpace(string(data))
+		}
+	}
+	in.ActionPrompt = actionPrompt
+
 	update := func(stage string, progress int, message string) {
 		_ = r.updateOfflineVideoJob(in.CharacterID, in.JobID, func(job *offlineVideoJob) {
 			job.Status = "running"
@@ -457,7 +473,7 @@ func (r *Router) runOfflineVideoJob(in offlineVideoRunInput) {
 			job.Message = message
 		})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), orchestrator.OfflineVideoSafetyTimeout())
 	defer cancel()
 	crf := 23
 	if r.cfg != nil {
@@ -466,16 +482,18 @@ func (r *Router) runOfflineVideoJob(in offlineVideoRunInput) {
 
 	update("starting", 3, "Starting offline generation")
 	result, err := r.orch.GenerateOfflineVideo(ctx, orchestrator.OfflineVideoGenerateInput{
-		JobID:       in.JobID,
-		CharacterID: in.CharacterID,
-		ImageData:   in.ImageData,
-		ImageFormat: in.ImageFormat,
-		Text:        in.Text,
-		Audio:       in.Audio,
-		TTSConfig:   in.TTSConfig,
-		OutputPath:  in.OutputPath,
-		CRF:         crf,
-		OnProgress:  update,
+		JobID:        in.JobID,
+		CharacterID:  in.CharacterID,
+		InputType:    in.InputType,
+		ImageData:    in.ImageData,
+		ImageFormat:  in.ImageFormat,
+		Text:         in.Text,
+		Audio:        in.Audio,
+		TTSConfig:    in.TTSConfig,
+		ActionPrompt: in.ActionPrompt,
+		OutputPath:   in.OutputPath,
+		CRF:          crf,
+		OnProgress:   update,
 	})
 	if err != nil {
 		_ = r.updateOfflineVideoJob(in.CharacterID, in.JobID, func(job *offlineVideoJob) {
@@ -706,10 +724,6 @@ func baiduXilingOfflineResolution(ch *character.Character) (int, int) {
 func baiduXilingOfflineVideoOptionsFromRequest(req *http.Request, ch *character.Character) baiduXilingOfflineVideoOptions {
 	defaultWidth, defaultHeight := baiduXilingOfflineResolution(ch)
 	width := parsePositiveInt(strings.TrimSpace(req.FormValue("width")), defaultWidth, 3840)
-	// 动作提示词：写入动态文件供 LiveAct 读取
-	if ap := strings.TrimSpace(req.FormValue("actionPrompt")); ap != "" {
-		os.WriteFile("/root/autodl-tmp/dynamic_prompt.txt", []byte(ap), 0644)
-	}
 	height := parsePositiveInt(strings.TrimSpace(req.FormValue("height")), defaultHeight, 3840)
 	transparentDefault := parseOfflineVideoBool(os.Getenv("BAIDU_XILING_OFFLINE_TRANSPARENT"), false)
 	options := baiduXilingOfflineVideoOptions{

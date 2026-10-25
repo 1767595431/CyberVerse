@@ -85,6 +85,9 @@ func (r *Router) handleTriggerOfflineLiveAction(w http.ResponseWriter, req *http
 }
 
 func (r *Router) triggerRandomOfflineLiveAction(sessionID string) {
+	if r.danmakuScheduler != nil && r.danmakuScheduler.IdleActionsPaused(sessionID) {
+		return
+	}
 	if r.sessionMgr == nil {
 		return
 	}
@@ -171,6 +174,13 @@ func (r *Router) handleTriggerOfflineLiveSong(w http.ResponseWriter, req *http.R
 }
 
 func (r *Router) broadcastOfflineLiveSong(sessionID, songID, title, url string, stop bool) {
+	if r.danmakuScheduler != nil {
+		if stop {
+			r.danmakuScheduler.ResumeIdleActions(sessionID)
+		} else if strings.TrimSpace(url) != "" {
+			r.danmakuScheduler.PauseIdleActions(sessionID)
+		}
+	}
 	if r.wsHub == nil {
 		return
 	}

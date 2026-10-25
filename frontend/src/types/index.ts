@@ -140,6 +140,7 @@ export interface OfflineVideoJob {
   provider?: string
   input_type: 'text' | 'audio' | 'sing'
   text?: string
+  action_prompt?: string
   status: OfflineVideoStatus
   stage?: string
   message?: string

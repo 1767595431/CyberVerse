@@ -19,6 +19,7 @@ import CvSelect from '../components/CvSelect.vue'
 import type { AvatarModelInfo, ConfigSection, ConfigParam } from '../types'
 import { saveLaunchWorkspaceMode, type LaunchWorkspaceMode } from '../utils/launchModePreference'
 import { formatVoiceTypeDisplay } from '../utils/voice'
+import { mapSelectedUrlsToClips } from '../utils/offlineLiveClipOrder'
 import { buildSessionLaunchState, saveSessionLaunchState } from '../utils/sessionLaunchState'
 import {
   isOfflineLiveActionVideoTitle,
@@ -32,6 +33,8 @@ import {
   resolveOfflineLiveLaunchVideoUrls,
   saveOfflineLiveLaunchPreference,
 } from '../utils/offlineLiveLaunchPreference'
+import { LOCAL_ONLY_DEPLOYMENT } from '../constants/localDeployment'
+import { isCloudAvatarBackend } from '../utils/localDeployment'
 
 type ManagedVideoOption = {
   id: string
@@ -75,6 +78,9 @@ const isBaiduXilingCharacter = computed(() => store.current?.avatar_backend === 
 const isXunfeiCharacter = computed(() => store.current?.avatar_backend === 'xunfei')
 const isViduCharacter = computed(() => store.current?.avatar_backend === 'vidu')
 const isExternalAvatarCharacter = computed(() => isBaiduXilingCharacter.value || isXunfeiCharacter.value || isViduCharacter.value)
+const cloudAvatarBlocked = computed(() =>
+  LOCAL_ONLY_DEPLOYMENT && isCloudAvatarBackend(store.current?.avatar_backend),
+)
 const managedVideoOptions = ref<ManagedVideoOption[]>([])
 const selectedIdleVideoUrls = ref<string[]>([])
 const selectedActionVideoUrls = ref<string[]>([])
@@ -161,20 +167,20 @@ async function handleOfflineLiveCheckVoice() {
   }
 }
 
+const selectedIdleClips = computed(() =>
+  mapSelectedUrlsToClips(selectedIdleVideoUrls.value, idleVideoOptions.value),
+)
 const selectedActionClips = computed(() =>
-  actionVideoOptions.value
-    .filter(item => selectedActionVideoUrls.value.includes(item.url))
-    .map(item => ({ id: item.id, title: item.label, url: item.url })),
+  mapSelectedUrlsToClips(selectedActionVideoUrls.value, actionVideoOptions.value),
 )
 const selectedSingClips = computed(() =>
-  singVideoOptions.value
-    .filter(item => selectedSingVideoUrls.value.includes(item.url))
-    .map(item => ({ id: item.id, title: item.label, url: item.url })),
+  mapSelectedUrlsToClips(selectedSingVideoUrls.value, singVideoOptions.value),
 )
 const canLaunch = computed(() => {
+  if (cloudAvatarBlocked.value) return false
   if (isOfflineLiveWorkspace.value) {
     if (
-      selectedIdleVideoUrls.value.length !== 1
+      selectedIdleVideoUrls.value.length < 1
       || (selectedActionClips.value.length === 0 && selectedSingClips.value.length === 0)
       || isExternalAvatarCharacter.value
     ) {
@@ -372,8 +378,8 @@ function toggleManagedVideoSelection(url: string, selected: typeof selectedIdleV
   selected.value = [...selected.value, url]
 }
 
-function selectIdleVideo(url: string) {
-  selectedIdleVideoUrls.value = [url]
+function toggleIdleVideo(url: string) {
+  toggleManagedVideoSelection(url, selectedIdleVideoUrls, 1)
   persistOfflineLiveVideoPreference()
 }
 
@@ -494,6 +500,7 @@ async function launch() {
             ttsModel: offlineLiveTTSModel.value,
             ttsVoice: offlineLiveTTSVoice.value,
             idleVideoUrl: selectedIdleVideoUrls.value[0],
+            idleVideoUrls: selectedIdleVideoUrls.value,
             offlineLiveActions: selectedActionClips.value,
             offlineLiveSongs: selectedSingClips.value,
             danmakuPlatform: danmakuPlatform.value,
@@ -518,10 +525,11 @@ async function launch() {
       launchReturnPath,
       playbackMode,
     )
-    if (playbackMode === 'offline_live' && selectedIdleVideoUrls.value.length === 1) {
+    if (playbackMode === 'offline_live' && selectedIdleVideoUrls.value.length >= 1) {
       launchState.idle_strategy = 'cached_video'
       launchState.idle_video_url = selectedIdleVideoUrls.value[0]
-      launchState.idle_video_urls = [selectedIdleVideoUrls.value[0]]
+      launchState.idle_video_urls = [...selectedIdleVideoUrls.value]
+      launchState.offline_live_idle_clips = selectedIdleClips.value
       launchState.offline_live_actions = resp.offline_live_actions?.length
         ? resp.offline_live_actions
         : selectedActionClips.value
@@ -597,6 +605,12 @@ async function launch() {
       <div v-if="showLoading" class="py-24 text-center text-cv-text-secondary">{{ t('launch.loadingConfig') }}</div>
 
       <template v-else-if="store.current">
+        <p
+          v-if="cloudAvatarBlocked"
+          class="rounded-cv-lg border border-cv-warning/30 bg-cv-warning/10 px-4 py-3 text-sm leading-6 text-cv-warning"
+        >
+          {{ t('localDeployment.cloudAvatarBlocked') }}
+        </p>
         <div class="grid gap-8 lg:grid-cols-[300px_minmax(0,1fr)]">
           <aside class="character-panel">
             <div class="avatar-shell">
@@ -738,11 +752,11 @@ async function launch() {
                   </div>
                   <p>{{ t('offlineVideo.offlineLiveSelectIdleHint') }}</p>
                   <p class="idle-picker-scope">{{ t('offlineVideo.offlineLiveIdleOnlyFromManager') }}</p>
+                  <p class="idle-picker-scope">{{ t('offlineVideo.offlineLiveIdleQueueHint') }}</p>
                   <p class="idle-picker-count">
-                    {{ t('offlineVideo.offlineLiveIdleSelectedOne') }}
-                    <template v-if="selectedIdleVideoUrls.length === 1">
-                      — {{ idleVideoOptions.find(item => item.url === selectedIdleVideoUrls[0])?.label }}
-                    </template>
+                    {{ selectedIdleVideoUrls.length === 1
+                      ? t('offlineVideo.offlineLiveIdleSelectedOne')
+                      : t('offlineVideo.offlineLiveIdleSelectedCount', { count: selectedIdleVideoUrls.length }) }}
                   </p>
                 </div>
 
@@ -759,7 +773,7 @@ async function launch() {
                     v-for="option in idleVideoOptions"
                     :key="`idle-${option.id}`"
                     class="managed-video-card"
-                    :class="{ 'managed-video-card--active': selectedIdleVideoUrls[0] === option.url }"
+                    :class="{ 'managed-video-card--active': selectedIdleVideoUrls.includes(option.url) }"
                   >
                     <button
                       type="button"
@@ -783,10 +797,10 @@ async function launch() {
                       <button
                         type="button"
                         class="managed-video-select-btn"
-                        :class="{ 'managed-video-select-btn--active': selectedIdleVideoUrls[0] === option.url }"
-                        @click="selectIdleVideo(option.url)"
+                        :class="{ 'managed-video-select-btn--active': selectedIdleVideoUrls.includes(option.url) }"
+                        @click="toggleIdleVideo(option.url)"
                       >
-                        {{ selectedIdleVideoUrls[0] === option.url ? t('offlineVideo.offlineLiveSelected') : t('offlineVideo.offlineLivePickIdle') }}
+                        {{ selectedIdleVideoUrls.includes(option.url) ? t('offlineVideo.offlineLiveSelected') : t('offlineVideo.offlineLivePickIdle') }}
                       </button>
                     </div>
                   </article>
@@ -1031,7 +1045,7 @@ async function launch() {
               </div>
               <div v-if="saveMessage" class="notice success">{{ saveMessage }}</div>
 
-              <div v-if="isBaiduXilingCharacter" class="config-card">
+              <div v-if="!LOCAL_ONLY_DEPLOYMENT && isBaiduXilingCharacter" class="config-card">
                 <div
                   v-for="row in baiduXilingInfoRows"
                   :key="row.label"
@@ -1042,7 +1056,7 @@ async function launch() {
                 </div>
               </div>
 
-              <div v-else-if="isXunfeiCharacter" class="config-card">
+              <div v-else-if="!LOCAL_ONLY_DEPLOYMENT && isXunfeiCharacter" class="config-card">
                 <div
                   v-for="row in xunfeiInfoRows"
                   :key="row.label"
@@ -1053,7 +1067,7 @@ async function launch() {
                 </div>
               </div>
 
-              <div v-else-if="isViduCharacter" class="notice success">
+              <div v-else-if="!LOCAL_ONLY_DEPLOYMENT && isViduCharacter" class="notice success">
                 {{ t('launch.viduNativeRuntime') }}
               </div>
 

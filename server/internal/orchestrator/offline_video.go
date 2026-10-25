@@ -24,16 +24,18 @@ type OfflineAudioInput struct {
 }
 
 type OfflineVideoGenerateInput struct {
-	JobID       string
-	CharacterID string
-	ImageData   []byte
-	ImageFormat string
-	Text        string
-	Audio       *OfflineAudioInput
-	TTSConfig   inference.TTSConfig
-	OutputPath  string
-	CRF         int
-	OnProgress  func(stage string, progress int, message string)
+	JobID        string
+	CharacterID  string
+	InputType    string
+	ImageData    []byte
+	ImageFormat  string
+	Text         string
+	Audio        *OfflineAudioInput
+	TTSConfig    inference.TTSConfig
+	ActionPrompt string
+	OutputPath   string
+	CRF          int
+	OnProgress   func(stage string, progress int, message string)
 }
 
 type OfflineVideoGenerateResult struct {
@@ -114,13 +116,21 @@ func (o *Orchestrator) GenerateOfflineVideo(ctx context.Context, in OfflineVideo
 	o.avatarMu.Lock()
 	defer o.avatarMu.Unlock()
 
+	genTimeout := offlineVideoGenerationTimeout(in.InputType)
+	genCtx, cancel := context.WithTimeout(ctx, genTimeout)
+	defer cancel()
+
+	if err := WriteLiveActDynamicPrompt(in.ActionPrompt); err != nil {
+		return nil, fmt.Errorf("apply action prompt: %w", err)
+	}
+
 	o.emitOfflineProgress(in, "avatar", 8, "Preparing avatar image")
-	if err := o.inference.SetAvatar(ctx, in.JobID, in.ImageData, in.ImageFormat); err != nil {
+	if err := o.inference.SetAvatar(genCtx, in.JobID, in.ImageData, in.ImageFormat); err != nil {
 		return nil, err
 	}
 
 	o.emitOfflineProgress(in, "audio", 18, "Preparing driving audio")
-	audioChunks, pcm, sampleRate, err := o.offlineAudioChunks(ctx, in)
+	audioChunks, pcm, sampleRate, err := o.offlineAudioChunks(genCtx, in)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +139,7 @@ func (o *Orchestrator) GenerateOfflineVideo(ctx context.Context, in OfflineVideo
 	}
 
 	o.emitOfflineProgress(in, "video", 45, "Generating avatar frames")
-	videoCh, errCh := o.inference.GenerateAvatar(ctx, audioChunks)
+	videoCh, errCh := o.inference.GenerateAvatar(genCtx, audioChunks)
 	var rgbChunks [][]byte
 	width := 0
 	height := 0
