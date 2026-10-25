@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import {
+  fetchDanmakuFeed,
   getConversationMessages,
   getTaskArtifactUrl,
   getTaskEvents,
@@ -9,6 +10,7 @@ import {
   type AgentTaskEvent,
 } from '../services/api'
 import { translate } from '../i18n'
+import { resolveWebSocketBase } from '../utils/wsBase'
 
 export type TaskStatus = 'queued' | 'running' | 'waiting_user' | 'completed' | 'failed' | 'cancelled'
 
@@ -56,6 +58,22 @@ export interface ChatMessage {
 
 export type AvatarStatus = 'idle' | 'speaking' | 'processing'
 
+export interface DanmakuFeedItem {
+  username: string
+  text: string
+  source: string
+  timestamp: number
+  messageId?: string
+}
+
+type OfflineLiveMediaQueueItem =
+  | { kind: 'action'; url: string; actionId: string; title: string }
+  | { kind: 'sing'; url: string; songId: string; title: string }
+
+type OfflineLiveOverlayClip =
+  | OfflineLiveMediaQueueItem
+  | { kind: 'answer'; url: string; turnSeq: number }
+
 export interface BaiduXilingAudioEvent {
   requestId: string
   audio: string
@@ -66,6 +84,13 @@ export interface BaiduXilingAudioEvent {
 
 export interface ViduControlEvent {
   type: 'vidu_ready' | 'vidu_error' | 'vidu_hangup'
+  message: string
+}
+
+export interface TurnVideoProgress {
+  turnSeq: number
+  stage: string
+  progress: number
   message: string
 }
 
@@ -96,6 +121,19 @@ export function useChat(sessionId: () => string) {
   const avatarStatus = ref<AvatarStatus>('idle')
   const idleVideoUrls = ref<string[]>([])
   const idleVideoUrl = computed(() => idleVideoUrls.value.length > 0 ? idleVideoUrls.value[0] : '')
+  const answerVideoUrl = ref('')
+  const answerTurnSeq = ref(0)
+  const offlineLiveActionUrl = ref('')
+  const offlineLiveActionTitle = ref('')
+  const currentOfflineLiveOverlay = ref<OfflineLiveOverlayClip | null>(null)
+  /** Action / singing clips waiting to play (FIFO). */
+  const pendingOfflineLiveMedia = ref<OfflineLiveMediaQueueItem[]>([])
+  /** Offline-live answer clips waiting to play, sorted by turn_seq ascending. */
+  const pendingAnswerVideos = ref<Array<{ turnSeq: number; url: string }>>([])
+  let lastPlayedAnswerTurnSeq = 0
+  const danmakuFeed = ref<DanmakuFeedItem[]>([])
+  const danmakuStatus = ref('')
+  const turnVideoProgress = ref<TurnVideoProgress | null>(null)
   const isConnected = ref(false)
 
   // Signaling handler for Direct WebRTC mode
@@ -463,13 +501,15 @@ export function useChat(sessionId: () => string) {
 
   function connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const wsBase = import.meta.env.VITE_WS_BASE || `ws://${window.location.host}`
-      const url = `${wsBase}/ws/chat/${sessionId()}`
+      const url = `${resolveWebSocketBase()}/ws/chat/${sessionId()}`
       ws.value = new WebSocket(url)
 
       ws.value.onopen = () => {
         isConnected.value = true
         void recoverTaskEvents()
+        void fetchDanmakuFeed(sessionId())
+          .then((snap) => applyDanmakuFeedSnapshot(snap))
+          .catch(() => {})
         resolve()
       }
 
@@ -607,6 +647,97 @@ export function useChat(sessionId: () => string) {
           }
           break
 
+        case 'offline_live_action': {
+          if (data.clear) {
+            if (currentOfflineLiveOverlay.value?.kind === 'action') {
+              handleOfflineLiveOverlayEnded()
+            }
+            break
+          }
+          const url = readString(data.url)
+          const actionId = readString(data.action_id)
+          const title = readString(data.title)
+          if (!url) break
+          requestOfflineLiveActionPlay({
+            url,
+            actionId: actionId || url,
+            title: title || actionId,
+          })
+          break
+        }
+
+        case 'danmaku': {
+          const text = readString(data.text)
+          if (!text) break
+          const item: DanmakuFeedItem = {
+            username: readString(data.username) || '观众',
+            text,
+            source: readString(data.source) || 'unknown',
+            timestamp: typeof data.timestamp === 'number' ? data.timestamp : Date.now(),
+            messageId: readString(data.message_id),
+          }
+          danmakuFeed.value = [...danmakuFeed.value, item].slice(-120)
+          break
+        }
+
+        case 'danmaku_status': {
+          const status = readString(data.status)
+          if (status === 'connected') {
+            danmakuStatus.value = readString(data.platform) || 'connected'
+          } else if (status === 'starting') {
+            danmakuStatus.value = readString(data.message) || translate('session.danmakuStatusStarting')
+          } else if (status === 'disconnected') {
+            danmakuStatus.value = 'disconnected'
+          } else if (status === 'error') {
+            danmakuStatus.value = readString(data.message) || translate('session.danmakuStatusError')
+          }
+          break
+        }
+
+        case 'offline_live_song': {
+          if (data.stop) {
+            stopOfflineLiveSong()
+            break
+          }
+          const url = readString(data.url)
+          const songId = readString(data.song_id)
+          const title = readString(data.title)
+          if (!url) break
+          requestOfflineLiveSongPlay({
+            url,
+            songId: songId || url,
+            title: title || songId,
+          })
+          break
+        }
+
+        case 'turn_video_ready': {
+          const turnSeq = parseTurnSeq(data)
+          const url = readString(data.url)
+          if (turnSeq && turnVideoProgress.value?.turnSeq === turnSeq) {
+            turnVideoProgress.value = null
+          }
+          enqueueAnswerVideo(turnSeq, url)
+          break
+        }
+
+        case 'turn_video_progress': {
+          const turnSeq = parseTurnSeq(data)
+          if (!turnSeq) break
+          const progress = Number(data.progress)
+          turnVideoProgress.value = {
+            turnSeq,
+            stage: readString(data.stage),
+            progress: Number.isFinite(progress) ? Math.min(100, Math.max(0, progress)) : 0,
+            message: readString(data.message),
+          }
+          // Progress is informational; never steal the screen from a playing clip.
+          if (!currentOfflineLiveOverlay.value && avatarStatus.value !== 'speaking') {
+            avatarStatus.value = 'processing'
+          }
+          break
+        }
+
         case 'avatar_warning':
           console.warn('[CyberVerse]', data.message || data)
           break
@@ -620,6 +751,7 @@ export function useChat(sessionId: () => string) {
           })
           resetTransientState()
           avatarStatus.value = 'idle'
+          turnVideoProgress.value = null
           break
         }
 
@@ -657,6 +789,10 @@ export function useChat(sessionId: () => string) {
             break
           }
           beginTurnSeq(turnSeq)
+          // Keep local "speaking" while an offline-live answer clip is still on screen.
+          if (data.status === 'idle' && currentOfflineLiveOverlay.value) {
+            break
+          }
           avatarStatus.value = data.status
           if (data.status === 'idle') {
             resetTransientState()
@@ -776,7 +912,202 @@ export function useChat(sessionId: () => string) {
     latestTurnSeq.value = 0
     voiceDrafts.clear()
     lastTaskSeqByTaskId.clear()
+    pendingAnswerVideos.value = []
+    pendingOfflineLiveMedia.value = []
+    lastPlayedAnswerTurnSeq = 0
+    danmakuFeed.value = []
+    danmakuStatus.value = ''
+    turnVideoProgress.value = null
+    currentOfflineLiveOverlay.value = null
+    answerVideoUrl.value = ''
+    answerTurnSeq.value = 0
+    offlineLiveActionUrl.value = ''
+    offlineLiveActionTitle.value = ''
     resetTransientState()
+  }
+
+  /** Clears visible chat messages for the current session UI (does not delete server history). */
+  function clearMessages() {
+    messages.value = []
+    historyNextCursor.value = ''
+    historyHasMore.value = false
+    latestTurnSeq.value = 0
+    voiceDrafts.clear()
+    resetTransientState()
+  }
+
+  function syncOfflineLiveOverlayRefs(clip: OfflineLiveOverlayClip | null) {
+    if (!clip) {
+      offlineLiveActionUrl.value = ''
+      offlineLiveActionTitle.value = ''
+      answerVideoUrl.value = ''
+      answerTurnSeq.value = 0
+      if (avatarStatus.value === 'speaking') {
+        avatarStatus.value = 'idle'
+      }
+      return
+    }
+    if (clip.kind === 'action' || clip.kind === 'sing') {
+      offlineLiveActionUrl.value = clip.url
+      offlineLiveActionTitle.value = clip.title
+      answerVideoUrl.value = ''
+      answerTurnSeq.value = 0
+    } else {
+      answerVideoUrl.value = clip.url
+      answerTurnSeq.value = clip.turnSeq
+      offlineLiveActionUrl.value = ''
+      offlineLiveActionTitle.value = ''
+      lastPlayedAnswerTurnSeq = clip.turnSeq
+    }
+    avatarStatus.value = 'speaking'
+  }
+
+  function startOfflineLiveOverlay(clip: OfflineLiveOverlayClip) {
+    currentOfflineLiveOverlay.value = clip
+    syncOfflineLiveOverlayRefs(clip)
+  }
+
+  function tryStartNextOfflineLiveOverlay() {
+    if (pendingOfflineLiveMedia.value.length > 0) {
+      const next = pendingOfflineLiveMedia.value[0]
+      pendingOfflineLiveMedia.value = pendingOfflineLiveMedia.value.slice(1)
+      startOfflineLiveOverlay(next)
+      return
+    }
+    while (pendingAnswerVideos.value.length > 0) {
+      const next = pendingAnswerVideos.value[0]
+      if (next.turnSeq <= lastPlayedAnswerTurnSeq) {
+        pendingAnswerVideos.value = pendingAnswerVideos.value.slice(1)
+        continue
+      }
+      pendingAnswerVideos.value = pendingAnswerVideos.value.slice(1)
+      startOfflineLiveOverlay({ kind: 'answer', url: next.url, turnSeq: next.turnSeq })
+      return
+    }
+    currentOfflineLiveOverlay.value = null
+    syncOfflineLiveOverlayRefs(null)
+  }
+
+  function enqueueOfflineLiveMedia(item: OfflineLiveMediaQueueItem) {
+    if (currentOfflineLiveOverlay.value?.kind === 'answer') {
+      pendingOfflineLiveMedia.value = [...pendingOfflineLiveMedia.value, item]
+      return
+    }
+    if (!currentOfflineLiveOverlay.value) {
+      startOfflineLiveOverlay(item)
+      return
+    }
+    pendingOfflineLiveMedia.value = [...pendingOfflineLiveMedia.value, item]
+  }
+
+  function requestOfflineLiveActionPlay(clip: { url: string; actionId: string; title: string }) {
+    enqueueOfflineLiveMedia({
+      kind: 'action',
+      url: clip.url,
+      actionId: clip.actionId,
+      title: clip.title,
+    })
+  }
+
+  function requestOfflineLiveSongPlay(clip: { url: string; songId: string; title: string }) {
+    enqueueOfflineLiveMedia({
+      kind: 'sing',
+      url: clip.url,
+      songId: clip.songId,
+      title: clip.title,
+    })
+  }
+
+  function stopOfflineLiveSong() {
+    pendingOfflineLiveMedia.value = pendingOfflineLiveMedia.value.filter(item => item.kind !== 'sing')
+    if (currentOfflineLiveOverlay.value?.kind !== 'sing') {
+      return
+    }
+    currentOfflineLiveOverlay.value = null
+    syncOfflineLiveOverlayRefs(null)
+    tryStartNextOfflineLiveOverlay()
+  }
+
+  function handleOfflineLiveOverlayEnded() {
+    currentOfflineLiveOverlay.value = null
+    tryStartNextOfflineLiveOverlay()
+  }
+
+  const offlineLiveOverlayKind = computed(() => currentOfflineLiveOverlay.value?.kind ?? null)
+
+  function answerUrlMatchesTurn(url: string, turnSeq: number): boolean {
+    if (!url || turnSeq <= 0) return false
+    // Bind clip identity to turn_seq embedded in the API path.
+    return url.includes(`/turns/${turnSeq}/`)
+  }
+
+  function enqueueAnswerVideo(turnSeq: number, url: string) {
+    if (!turnSeq || !url) {
+      console.warn('[useChat] ignore turn_video_ready without turn_seq/url', { turnSeq, url })
+      return
+    }
+    if (!answerUrlMatchesTurn(url, turnSeq)) {
+      console.warn('[useChat] reject turn_video_ready: url/turn_seq mismatch', { turnSeq, url })
+      return
+    }
+    if (turnSeq <= lastPlayedAnswerTurnSeq) {
+      console.warn('[useChat] ignore stale turn_video_ready', { turnSeq, lastPlayed: lastPlayedAnswerTurnSeq })
+      return
+    }
+    if (
+      currentOfflineLiveOverlay.value?.kind === 'answer'
+      && currentOfflineLiveOverlay.value.turnSeq === turnSeq
+      && currentOfflineLiveOverlay.value.url === url
+    ) {
+      return
+    }
+    if (pendingAnswerVideos.value.some(item => item.turnSeq === turnSeq)) {
+      return
+    }
+
+    pendingAnswerVideos.value = [...pendingAnswerVideos.value, { turnSeq, url }]
+      .sort((a, b) => a.turnSeq - b.turnSeq)
+
+    if (!currentOfflineLiveOverlay.value) {
+      tryStartNextOfflineLiveOverlay()
+    }
+  }
+
+  function applyDanmakuFeedSnapshot(snap: {
+    items?: Array<{
+      username: string
+      text: string
+      source: string
+      message_id?: string
+      timestamp: number
+    }>
+    status?: string
+    platform?: string
+  }) {
+    if (snap.items?.length) {
+      danmakuFeed.value = snap.items.map((row) => ({
+        username: row.username || '观众',
+        text: row.text,
+        source: row.source || 'unknown',
+        timestamp: row.timestamp,
+        messageId: row.message_id,
+      }))
+    }
+    if (snap.status === 'connected' && snap.platform) {
+      danmakuStatus.value = snap.platform
+    }
+  }
+
+  function clearAnswerVideo() {
+    if (currentOfflineLiveOverlay.value) {
+      handleOfflineLiveOverlayEnded()
+      return
+    }
+    answerVideoUrl.value = ''
+    answerTurnSeq.value = 0
+    if (avatarStatus.value === 'speaking') {
+      avatarStatus.value = 'idle'
+    }
   }
 
   return {
@@ -786,6 +1117,21 @@ export function useChat(sessionId: () => string) {
     avatarStatus,
     idleVideoUrl,
     idleVideoUrls,
+    answerVideoUrl,
+    answerTurnSeq,
+    offlineLiveActionUrl,
+    offlineLiveActionTitle,
+    requestOfflineLiveActionPlay,
+    requestOfflineLiveSongPlay,
+    stopOfflineLiveSong,
+    offlineLiveOverlayKind,
+    handleOfflineLiveOverlayEnded,
+    danmakuFeed,
+    danmakuStatus,
+    turnVideoProgress,
+    applyDanmakuFeedSnapshot,
+    clearAnswerVideo,
+    clearMessages,
     isConnected,
     historyLoading,
     historyHasMore,

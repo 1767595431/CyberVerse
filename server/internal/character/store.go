@@ -59,6 +59,7 @@ type AgentExtension struct {
 
 type Components struct {
 	LLM      string `json:"llm"`
+	LLMModel string `json:"llm_model,omitempty"`
 	ASR      string `json:"asr"`
 	TTS      string `json:"tts"`
 	TTSModel string `json:"tts_model,omitempty"`
@@ -144,6 +145,10 @@ func NormalizeComponents(components Components, defaults Components) Components 
 	}
 	if components.TTS == "" {
 		components.TTS = defaults.TTS
+	}
+	components.LLMModel = strings.TrimSpace(components.LLMModel)
+	if components.LLMModel == "" {
+		components.LLMModel = strings.TrimSpace(defaults.LLMModel)
 	}
 	components.TTSModel = strings.TrimSpace(components.TTSModel)
 	if components.TTSModel == "" && components.TTS == defaults.TTS {

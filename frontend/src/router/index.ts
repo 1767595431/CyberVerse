@@ -41,10 +41,14 @@ const router = createRouter({
     {
       path: '/launch/:id',
       name: 'launch',
-      redirect: to => ({
-        name: loadLaunchWorkspaceMode() === 'live' ? 'launch-live' : 'launch-offline',
-        params: { id: to.params.id },
-      }),
+      redirect: to => {
+        const mode = loadLaunchWorkspaceMode()
+        const name =
+          mode === 'live' ? 'launch-live'
+            : mode === 'offline_live' ? 'launch-offline-live'
+              : 'launch-offline'
+        return { name, params: { id: to.params.id } }
+      },
     },
     {
       path: '/launch/:id/offline',
@@ -54,6 +58,11 @@ const router = createRouter({
     {
       path: '/launch/:id/live',
       name: 'launch-live',
+      component: LaunchConfigPage,
+    },
+    {
+      path: '/launch/:id/offline-live',
+      name: 'launch-offline-live',
       component: LaunchConfigPage,
     },
     {

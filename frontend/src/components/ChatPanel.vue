@@ -194,6 +194,8 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <slot name="above-input" />
+
     <div class="input-bar">
       <input
         v-model="inputText"
@@ -212,7 +214,9 @@ onUnmounted(() => {
 .chat-panel {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
   background: #1e1e1e;
   overflow: hidden;
 }

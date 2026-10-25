@@ -177,6 +177,21 @@ func (o *Orchestrator) GenerateOfflineVideo(ctx context.Context, in OfflineVideo
 }
 
 func (o *Orchestrator) offlineAudioChunks(ctx context.Context, in OfflineVideoGenerateInput) ([]*pb.AudioChunk, []byte, int, error) {
+	// 如果上传了音频，优先用上传的音频，忽略 text
+	if in.Audio != nil && len(in.Audio.PCM16) > 0 {
+		sampleRate := in.Audio.SampleRate
+		if sampleRate <= 0 {
+			sampleRate = 16000
+		}
+		chunk := &pb.AudioChunk{
+			Data:       append([]byte(nil), in.Audio.PCM16...),
+			SampleRate: int32(sampleRate),
+			Channels:   1,
+			Format:     "pcm_s16le",
+			IsFinal:    true,
+		}
+		return []*pb.AudioChunk{chunk}, append([]byte(nil), in.Audio.PCM16...), sampleRate, nil
+	}
 	if strings.TrimSpace(in.Text) != "" {
 		return o.synthesizeOfflineText(ctx, strings.TrimSpace(in.Text), in.TTSConfig)
 	}

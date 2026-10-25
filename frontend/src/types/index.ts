@@ -138,7 +138,7 @@ export interface OfflineVideoJob {
   character_id: string
   title: string
   provider?: string
-  input_type: 'text' | 'audio'
+  input_type: 'text' | 'audio' | 'sing'
   text?: string
   status: OfflineVideoStatus
   stage?: string

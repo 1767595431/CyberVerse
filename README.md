@@ -1,516 +1,297 @@
-<h1 align="center">CyberVerse</h1>
-<p align="center"><em>CyberVerse is an open-source <strong>real-time digital-human Agent framework</strong>. It uses WebRTC, persona memory, tools, RAG, and optional digital-human video capabilities to help you build AI agents centered on voice interaction.</em></p>
+# CyberVerse
 
-<p align="center">
-  <a href="README.md"><strong>English</strong></a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
-</p>
+CyberVerse 是开源的**实时数字人 Agent 框架**：WebRTC / 直连媒体、可换 LLM·TTS·ASR·Omni 插件、人设与 RAG、本地 FlashHead / LiveAct 或云端数字人，并支持**离线成片**与**离线直播（待机循环 + 弹幕回答视频）**。
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL%20v3-blue.svg" alt="License: GPL v3"/></a>
-  <a href="https://github.com/dsd2077/CyberVerse/pulls"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"/></a>
-  <a href="https://deepwiki.com/dsd2077/CyberVerse"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a>
-  <a href="https://x.com/dsd2077"><img src="https://img.shields.io/badge/@dsd2077-black?logo=x&logoColor=white" alt="X" /></a>
-</p>
+| 文档 | 说明 |
+|------|------|
+| 本文 | **安装、运行、模型、云上调试**（团队主文档） |
+| [README.zh-CN.md](./README.zh-CN.md) | 产品介绍、Demo、能力矩阵（偏对外） |
+| [部署文档.md](./部署文档.md) | AutoDL / LiveAct 实测参数备忘 |
+| [live-danmaku/README.md](./live-danmaku/README.md) | B 站 / 抖音弹幕参考与 DyHub |
+| [AGENTS.md](./AGENTS.md) | 贡献与 Agent 约定 |
 
-<p align="center">
-  <a href="docs/assets/logo.png"><img src="docs/assets/logo.png" alt="CyberVerse logo" width="100%"/></a>
-</p>
-
-## Sponsor
-
-<details open>
-<summary>Click to collapse</summary>
-
-<table>
-<tr>
-<td width="180"><a href="https://passport.compshare.cn/register?referral_code=IBmJcGPVu1RF78dMihkQCX"><img src="https://www.compshare.cn/logo-compshare.png" alt="Compshare" width="150"></a></td>
-<td>Thanks to Compshare (优云智算) for sponsoring CyberVerse! Compshare is UCloud's AI cloud platform, offering on-demand GPU rental and model API services. <strong>Its core GPU rental service provides rapidly provisioned GPU instances with usage-based billing for model, algorithm, and application development.</strong> Compshare also provides one-stop access to domestic and international models, with support for Claude Code, Codex, and direct API use. <a href="https://passport.compshare.cn/register?referral_code=IBmJcGPVu1RF78dMihkQCX">Register through this invitation link</a>.</td>
-</tr>
-</table>
-
-</details>
+许可证：[GPL v3](./LICENSE)
 
 ---
 
-### One Photo. A Living Digital Human.
+## 1. 架构与端口
 
-> Ever dreamed of having your own J.A.R.V.I.S. — an AI that truly sees you, hears you, and talks back in real time?
->
-> Want to see someone you've lost again, hear their voice, watch them smile at you?
->
-> Or maybe there's a character you've always wished you could bring to life?
->
-> **Just one photo. CyberVerse makes them alive.**
-
-## What is a Digital-Human Agent?
-
-<p align="center">
-  <a href="docs/assets/digital-human-agent.jpeg"><img src="docs/assets/digital-human-agent.jpeg" alt="CyberVerse digital-human Agent" width="100%"/></a>
-</p>
-
-## Demo
-<p align="center"><em>The following characters are demo examples only. They are not bundled with CyberVerse and are not provided for commercial use.</em></p>
-
-<p align="center">
-  <a href="docs/assets/character1.png"><img src="docs/assets/character1.png" alt="CyberVerse character selection gallery" width="100%"/></a>
-</p>
-
-<p align="center">
-  <a href="docs/assets/character2.png"><img src="docs/assets/character2.png" alt="CyberVerse character gallery examples" width="100%"/></a>
-</p>
-
-<div align="center">
-
-| [![](docs/assets/爱丽丝.mov.png)](https://youtu.be/Lk88sew2x4o) | [![](docs/assets/丽娜.mov.png)](https://youtu.be/8jdQ3ThcwgA) |
-|:---:|:---:|
-| [**Alice — watch on YouTube**](https://youtu.be/Lk88sew2x4o) | [**Lina — watch on YouTube**](https://youtu.be/8jdQ3ThcwgA) |
-
-| [![](docs/assets/小龙女.mov.png)](https://youtu.be/WjEHUYZx5Gs) |
-|:---:|
-| [**Xiaolongnü — watch on YouTube**](https://youtu.be/WjEHUYZx5Gs) |
-
-</div>
-
-## Features
-
-### Realtime Digital Human Video Interaction
-
-With just one photo, you can create a digital human ready for real-time video conversation. Users can interact as naturally as a video call with a real person, interrupting or speaking over the digital human at any time for a full-duplex realtime experience.
-
-CyberVerse integrates the local FlashHead and LiveAct digital-human models, and supports cloud digital-human offerings such as Baidu Xiling and Xunfei Digital Human, covering a strong set of current open-source and commercial digital-human options.
-
-| Model | Quality | GPU | Count | Resolution | FPS | Real-time? |
-|-------|---------|-----|-------|------------|-----|------------|
-| FlashHead 1.3B | Pro | RTX 5090 | 2 | 512×512 | 25+ | ✅ Yes |
-| FlashHead 1.3B | Pro | RTX 5090 | 1 | 464x464 | 20 | ✅ Yes |
-| LiveAct 18B | — | RTX PRO 6000 | 2 | 320×480 | 20 | ✅ Yes |
-| LiveAct 18B | — | RTX PRO 6000 | 1 | 256×417 | 20 | ✅ Yes |
-| [Vidu S1](https://www.vidu.cn/subscription/personal?bonus-code=GWCK5M) | Cloud API | No local GPU required | — | 540P | 25 | ✅ Yes |
-| [Baidu Xiling Digital Human](https://xiling.cloud.baidu.com/) | Cloud API | No local GPU required | — | Provider/figure config | Provider response | ✅ Yes |
-| [Xunfei Digital Human](https://virtual-man.xfyun.cn/) | Cloud API | No local GPU required | — | Provider/figure config | Provider response | ✅ Yes |
-
-### PersonaAgent + SubAgent Tasks
-
-CyberVerse uses a multi-agent architecture: PersonaAgent stays in the foreground to maintain fluid conversation, respond quickly to interruptions, and handle context switches; long-running work such as search, research, material organization, summarization, and HTML report generation is delegated to background SubAgents asynchronously.
-
-This keeps complex tasks from slowing down voice turns. Users can keep speaking, ask follow-up questions, or adjust direction, and PersonaAgent can return the SubAgent result once it is ready.
-
-### Character Memory and RAG
-
-Each character's conversation history is persisted to local disk and automatically loaded when you re-enter a conversation, preserving continuity across sessions. You can also import knowledge bases, documents, and biographical material for a character; the system indexes them for retrieval-augmented generation, making answers better aligned with the character's background and persona.
-
-### Plugin-Based Stack
-
-Brain, voice, hearing, tools, memory, and face are all replaceable modules. Runtime behavior stays in `config/cyberverse.yaml`, while omni, LLM, TTS, ASR, and embedding provider definitions are loaded from the built-in `infra/config/*_models/` directories and optional local overrides under `config/*_models/`. You can configure different vendors' API keys and service endpoints in the web UI at **`/settings`** to switch providers and model combinations by scenario. The [LiteLLM](https://github.com/BerriAI/litellm) plugin adds access to 100+ LLM providers (AWS Bedrock, Azure, Vertex AI, Mistral, Cohere, etc.) through a single unified interface.
-
-## Quick Start
-
-### Cloud Images
-
-If you want to try CyberVerse quickly without setting up the environment dependencies manually, you can launch it from a cloud image:
-
-- [Compshare CyberVerse Image](https://www.compshare.cn/images/hKNKJSOUwn5H?referral_code=IBmJcGPVu1RF78dMihkQCX)
-- [AutoDL CyberVerse Image](https://www.autodl.art/i/dsd2077/CyberVerse/CyberVerse)
-
-For local deployment, continue with the installation steps below.
-
-### Prerequisites
-
-- Node 18+
-- Go 1.25 (required: `protoc-gen-go`, `protoc-gen-go-grpc`)
-- Conda
-- Python 3.10+
-- FFmpeg
-- libopus-dev、libopusfile-dev、libsoxr-dev，pkg-config
-
-> For pure voice sessions, no local avatar GPU is required. Runtime cost depends on the realtime voice/omni/LLM/TTS/ASR providers you configure.
-
-To verify, use:
-
-```bash
-node --version
-go version
-protoc --version
-ffmpeg -version
-conda --version
+```
+浏览器 ──HTTP/WS──► Go API (cyberverse-server)
+                         │
+                         ├── gRPC ──► Python Inference (LLM/TTS/ASR/Avatar)
+                         └── WebRTC / 直连媒体（实时会话）
 ```
 
-### Step 1: Clone
+| 组件 | 默认端口 | 说明 |
+|------|----------|------|
+| Go API | **6006**（`config/cyberverse.yaml` → `server.http_port`） | REST、`/ws` 会话 WebSocket |
+| Python Inference | **50051** gRPC | 模型推理 |
+| 前端 dev / preview | **6008** | Vite；`/api`、`/ws` 代理到 6006 |
+| 抖音 DyHub 中继 | **8757**（可选） | 离线直播接抖音弹幕时使用 |
+
+本地开发常见组合：
+
+- `make inference` + `make server` + `make frontend` → 浏览器打开 **http://127.0.0.1:6008**
+- 或 `frontend` 用 `npm run preview`（同样 6008），API 指向本机 6006
+
+---
+
+## 2. 环境要求
+
+| 依赖 | 版本建议 |
+|------|----------|
+| Python | 3.10（Conda 环境名建议 `cyberverse`） |
+| Go | 1.25+（需 `protoc-gen-go`、`protoc-gen-go-grpc`） |
+| Node.js | 18+（推荐 22） |
+| FFmpeg | 含 libvpx（离线 MP4） |
+| 系统库 | libopus、libopusfile、libsoxr、pkg-config（Go 侧 LiveKit 媒体） |
+
+**仅语音 Agent、不开本地 Avatar**：可不装 CUDA / 大模型权重，在配置里 `inference.avatar.enabled: false`。
+
+**本地数字人（FlashHead / LiveAct）**：CUDA 12.8+、PyTorch 2.8（cu128）、足够显存；LiveAct 另需 `vllm==0.11.0` 等（见 `pyproject.toml` 可选依赖）。
+
+---
+
+## 3. 安装与首次配置
+
+### 3.1 克隆与 Python 环境
 
 ```bash
 git clone https://github.com/dsd2077/CyberVerse.git
 cd CyberVerse
-```
 
-### Step 2: Create Python environment
-
-```bash
-conda create -n cyberverse python=3.10
+conda create -n cyberverse python=3.10 -y
 conda activate cyberverse
 ```
 
-### Step 3: Configure environment variables
+### 3.2 本地配置目录（勿提交 Git）
 
 ```bash
 cp -r infra/config config
 ```
 
-Edit `config/env` and fill in the supported API keys:
+- `config/env`：API Key、LiveKit、云端域名等（见下）
+- `config/cyberverse.yaml`：服务端口、Avatar、流水线默认值
+- `config/*_models/`、`config/avatar_models/`：仅在需要覆盖内置插件配置时再改
 
-Alibaba Cloud Qwen-series models:
+`config/` 已在 `.gitignore` 中，**每个环境各自维护**。
 
-```env
-DASHSCOPE_API_KEY=your_dashscope_api_key
-```
-
-Or Volcengine Doubao-series models:
+### 3.3 环境变量（`config/env` 示例）
 
 ```env
-DOUBAO_ACCESS_TOKEN=your_doubao_access_token
-DOUBAO_APP_ID=your_doubao_app_id
+# 通义 / Qwen（LLM、TTS、ASR、Omni 常用）
+DASHSCOPE_API_KEY=sk-...
+
+# 豆包（可选）
+DOUBAO_ACCESS_TOKEN=...
+DOUBAO_APP_ID=...
+
+# LiveKit（实时 WebRTC 模式需要）
+LIVEKIT_URL=wss://...
+LIVEKIT_API_KEY=...
+LIVEKIT_API_SECRET=...
 ```
 
-Or Atlas Cloud's OpenAI-compatible LLM models:
+也可在运行后于 Web **`/settings`** 修改部分密钥与端点。
 
-```env
-ATLASCLOUD_API_KEY=your_atlascloud_api_key
-```
-
-The built-in `atlas` LLM provider uses `https://api.atlascloud.ai/v1` and
-`deepseek-ai/deepseek-v4-flash`. Select `atlas` as the character's LLM
-component; existing defaults remain unchanged.
-
-Or Cheaper Inference's OpenAI-compatible LLM models:
-
-```env
-CHEAPER_INFERENCE_API_KEY=your_cheaper_inference_api_key
-```
-
-The built-in `cheaperinference` LLM provider uses `https://api.cheaperinference.com/v1` and
-`gpt-5.4-mini`. Select `cheaperinference` as the character's LLM
-component; existing defaults remain unchanged.
-
-Doubao Voice: follow the [Volcengine quick start](https://www.volcengine.com/docs/6561/2119699?lang=zh) to get **App ID** / **API Key**, then fill in `DOUBAO_APP_ID` / `DOUBAO_ACCESS_TOKEN`.
-
-After the stack is running, you can change API keys and service endpoints from the web UI at **`/settings`** instead of editing `config/env` only.
-
-Omni, LLM, embedding, TTS, and ASR model definitions are discovered automatically from `infra/config/*_models/`. Create matching files under `config/*_models/` only when you want local overrides.
-
-### Step 4: Create local config and enable voice-only mode
-
-Edit `config/cyberverse.yaml`:
-
-```yaml
-inference:
-  avatar:
-    enabled: false
-```
-
-With `enabled: false`, CyberVerse runs as a pure voice agent assistant.
-
-
-### Step 5: Install project dependencies
+### 3.4 安装依赖
 
 ```bash
 make setup
-```
-
-This installs the base editable package (`[dev,inference]`), generates gRPC stubs, and installs frontend dependencies.
-
-Install the voice-agent extras used by the default config:
-
-```bash
-# all optional groups at once
+# 按需安装可选能力，例如全部插件：
 pip install -e ".[all]"
 ```
 
-### Step 6: Start services (3 terminals)
+纯语音最小示例：在 `config/cyberverse.yaml` 中设置 `inference.avatar.enabled: false`，然后只启动 inference + server + frontend。
 
-**Terminal 1** — Python inference server:
+---
+
+## 4. 运行
+
+### 4.1 开发（三个终端）
 
 ```bash
+# 终端 1
 conda activate cyberverse
 make inference
-```
 
-**Terminal 2** — Go API server:
-
-```bash
+# 终端 2
 make server
-```
 
-**Terminal 3** — Frontend:
-
-```bash
+# 终端 3
 make frontend
 ```
 
-### Step 7: Verify
+浏览器访问：**http://127.0.0.1:6008**
+
+健康检查：
 
 ```bash
-# Check API health
-curl -s http://localhost:8080/api/v1/health
+curl -s http://127.0.0.1:6006/api/v1/health
+# 期望：status ok，且 inference_connected: true（Avatar/推理起来之后）
 ```
 
-Open http://localhost:5173 in your browser.
-
-## Optional: Full Digital-Human Video
-
-If you want to drive realtime Avatar video with FlashHead or LiveAct, follow the steps below.
-
-### Additional Requirements
-
-- GPU with CUDA 12.8+
-- PyTorch 2.8 (CUDA 12.8)
-- FFmpeg with `libvpx` for video encoding
-- Avatar model weights
-
-Install PyTorch (CUDA 12.8):
+### 4.2 生产 / 云上长期运行
 
 ```bash
-pip3 install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+conda activate cyberverse
+make build          # bin/cyberverse-server + frontend/dist
+
+# Inference（后台）
+nohup bash scripts/inference.sh >> /path/to/cv-inference.log 2>&1 &
+
+# Go API（后台）
+cd server
+nohup ./cyberverse-server --config ../config/cyberverse.yaml >> /path/to/cv-server.log 2>&1 &
+
+# 前端静态：由 Go 托管 dist，或单独 preview
+cd frontend && npm run preview -- --host 0.0.0.0 --port 6008
 ```
 
-Install vllm if you use LiveAct:
+也可用 `scripts/start_services.sh` 管理 `.run/logs/` 下的 inference / server / frontend（需项目内 `.venv` 与 Makefile 约定一致）。
 
-```bash
-pip install vllm==0.11.0
-```
+### 4.3 常用 Make 目标
 
-### Download Model Weights
+| 命令 | 作用 |
+|------|------|
+| `make proto` | 重新生成 gRPC 桩代码 |
+| `make test` | Python 单元测试 + Go 测试 |
+| `make inference` | 按 `config/cyberverse.yaml` 启动推理（含 torchrun 多卡） |
+| `make server` | 启动 Go API（livekit tag） |
+| `make frontend` | Vite 开发服务器 |
+| `make build` | 编译后端 + 前端 dist |
 
-CyberVerse currently supports **FlashHead** and **LiveAct**; download only what you need. More models will continue to be added.
+---
+
+## 5. 模型与权重下载
+
+权重目录默认 **`./checkpoints/`**（已在 `.gitignore`，不要提交 Git）。
 
 ```bash
 pip install "huggingface_hub[cli]"
+# 国内可选：export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-#### FlashHead (SoulX-FlashHead)
+### FlashHead
 
-| Model Component | Description | Link |
-| :--- | :--- | :--- |
-| `SoulX-FlashHead-1_3B` | 1.3B FlashHead weights | [Hugging Face](https://huggingface.co/Soul-AILab/SoulX-FlashHead-1_3B), [ModelScope](https://modelscope.cn/models/Soul-AILab/SoulX-FlashHead-1_3B) |
-| `wav2vec2-base-960h` | Audio feature extractor | [Hugging Face](https://huggingface.co/facebook/wav2vec2-base-960h), [ModelScope](https://modelscope.cn/models/facebook/wav2vec2-base-960h) |
+| 组件 | 目标路径 |
+|------|----------|
+| [SoulX-FlashHead-1_3B](https://huggingface.co/Soul-AILab/SoulX-FlashHead-1_3B) | `./checkpoints/SoulX-FlashHead-1_3B` |
+| [wav2vec2-base-960h](https://huggingface.co/facebook/wav2vec2-base-960h) | `./checkpoints/wav2vec2-base-960h` |
 
 ```bash
-# If you are in mainland China, you can use a mirror first:
-# export HF_ENDPOINT=https://hf-mirror.com
-
-hf download Soul-AILab/SoulX-FlashHead-1_3B \
-  --local-dir ./checkpoints/SoulX-FlashHead-1_3B
-
-hf download facebook/wav2vec2-base-960h \
-  --local-dir ./checkpoints/wav2vec2-base-960h
+hf download Soul-AILab/SoulX-FlashHead-1_3B --local-dir ./checkpoints/SoulX-FlashHead-1_3B
+hf download facebook/wav2vec2-base-960h --local-dir ./checkpoints/wav2vec2-base-960h
 ```
 
-#### LiveAct (SoulX-LiveAct)
+在 `config/cyberverse.yaml` 中设置 `inference.avatar.default: flash_head`，并编辑 `config/avatar_models/flash_head.yaml` 中的路径。
 
-| ModelName | Download |
-|-----------|----------|
-| SoulX-LiveAct | [Hugging Face](https://huggingface.co/Soul-AILab/LiveAct), [ModelScope](https://modelscope.cn/models/Soul-AILab/LiveAct) |
-| chinese-wav2vec2-base | [Hugging Face](https://huggingface.co/TencentGameMate/chinese-wav2vec2-base), [ModelScope](https://modelscope.cn/models/TencentGameMate/chinese-wav2vec2-base) |
+### LiveAct
+
+| 组件 | 目标路径 |
+|------|----------|
+| [Soul-AILab/LiveAct](https://huggingface.co/Soul-AILab/LiveAct) | `./checkpoints/LiveAct` |
+| [chinese-wav2vec2-base](https://huggingface.co/TencentGameMate/chinese-wav2vec2-base) | `./checkpoints/chinese-wav2vec2-base` |
 
 ```bash
-hf download Soul-AILab/LiveAct \
-  --local-dir ./checkpoints/LiveAct
-
-hf download TencentGameMate/chinese-wav2vec2-base \
-  --local-dir ./checkpoints/chinese-wav2vec2-base
+hf download Soul-AILab/LiveAct --local-dir ./checkpoints/LiveAct
+hf download TencentGameMate/chinese-wav2vec2-base --local-dir ./checkpoints/chinese-wav2vec2-base
 ```
 
-### Configure Avatar Inference
+LiveAct 性能相关配置见 `config/avatar_models/live_act.yaml`（如 `fp4_gemm`、`size`、`fps`）。**改分辨率 / world_size 后需重启 inference**。
 
-Set `enabled: true` in `config/cyberverse.yaml`. Model-specific settings live in
-one file per model under `config/avatar_models/`; update those paths to match your
-local checkpoints.
+### 不下载本地 Avatar 时
+
+- 使用 **纯语音**（`avatar.enabled: false`），或  
+- 角色选用 **百度曦灵 / 讯飞 / Vidu** 等云端 Avatar（在角色编辑页配置，密钥见 `config/env`）。
+
+---
+
+## 6. 云上环境（AutoDL、SeetaCloud 等）
+
+### 6.1 访问路径
+
+平台通常映射：**实例内 6006 或 6008 → 公网 HTTPS（如 `:8443`）**。
+
+- 仅跑 **Go + 内置静态前端**：对外暴露 **6006** 即可。  
+- 跑 **Vite preview/dev（6008）**：浏览器入口为 **6008**，Vite 把 `/api`、`/ws` 反代到 **127.0.0.1:6006**（见 `frontend/vite.config.ts`）。
+
+### 6.2 CORS 与 WebSocket
+
+在 **`config/cyberverse.yaml`** 的 `server.cors_origins` 中加入你的公网源，例如：
 
 ```yaml
-inference:
-  avatar:
-    enabled: true
-    default: "flash_head"               # use "flash_head" or "live_act"
-    idle_strategy: "silent_inference"
-    runtime:
-      cuda_visible_devices: 0      # shared GPU ID(s), e.g. 0,1 for multi-GPU
-      world_size: 1                # shared GPU count, set to 2 for dual-GPU
-    model_config_dir: "avatar_models"
+server:
+  cors_origins:
+    - https://你的实例域名.seetacloud.com:8443
+    - https://uu你的实例前缀.seetacloud.com:8443
 ```
 
-Then edit the active model file, for example `config/avatar_models/flash_head.yaml` or
-`config/avatar_models/live_act.yaml`. The Web UI also edits model parameters in those
-per-model files.
+修改后**重启 Go 服务**。否则浏览器会报跨域或 WS 握手失败。
 
-### Baidu Xiling H5 Digital Human
+### 6.3 Vite 远程 HMR（可选）
 
-For Baidu Xiling, keep credentials in `config/env`:
+开发模式下若用平台域名访问，需在 `frontend/vite.config.ts` 中设置与面板一致的 `publicOrigin`、`hmr.host`、`hmr.clientPort`（一般为 **8443**）。**生产 preview 可不改 HMR**，只要 `proxy` 指向本机 6006。
 
-```env
-BAIDU_XILING_APP_ID="your-app-id"
-BAIDU_XILING_APP_KEY="your-app-key"
-# Optional when the figure needs a fixed camera.
-BAIDU_XILING_CAMERA_ID="0"
-```
+### 6.4 健康检查与日志
 
-Baidu Xiling is selected per character in the Web UI. It is not an avatar
-inference model and should not be configured as `inference.avatar.default`.
-CyberVerse still runs ASR/LLM/TTS/history through the orchestrator, then sends
-16 kHz 16-bit mono PCM chunks to the browser. The frontend embeds the Baidu H5
-iframe and drives it with the official `sendAudioData` / `AUDIO_STREAM_RENDER`
-message format.
+| 现象 | 排查 |
+|------|------|
+| `inference_connected: false` | Inference 未起、50051 被占用、或启动尚未完成（LiveAct 加载较慢） |
+| 页面能开但会话无响应 | 看 Go 日志 WS；看 `curl localhost:6006/api/v1/health` |
+| TTS/LLM 报错 | `cv-inference.log` 中 DashScope / 插件错误 |
+| 离线直播无回答视频 | Go 日志 `offline_live:`、`TTS stream error`；确认 TTS 模型与音色 |
 
-### LiveAct FP4 GEMM (Optional)
+建议日志路径（自行约定，勿提交 Git）：
 
-FP4 acceleration requires building and installing `lightx2v_kernel` from [LightX2V](https://github.com/ModelTC/LightX2V). Use PyTorch **2.7+** and a CUTLASS checkout on the build machine.
+- `/path/to/cv-inference.log` — Python inference  
+- `/path/to/cv-server.log` — Go API  
 
-#### Preparation
+### 6.5 防火墙与端口
 
-```bash
-pip install scikit_build_core uv
-```
+- **50051** 仅需本机访问（Go → Inference）。  
+- 对外只开放平台映射的 **HTTPS 端口**；不要误把 50051 暴露公网。
 
-#### Build wheel
+---
 
-```bash
-git clone https://github.com/NVIDIA/cutlass.git
-git clone https://github.com/ModelTC/LightX2V.git
-cd LightX2V/lightx2v_kernel
-# Replace /path/to/cutlass with the absolute path to your cutlass clone.
-MAX_JOBS=$(nproc) && CMAKE_BUILD_PARALLEL_LEVEL=$(nproc) \
-uv build --wheel \
-    -Cbuild-dir=build . \
-    -Ccmake.define.CUTLASS_PATH=/path/to/cutlass \
-    --verbose \
-    --color=always \
-    --no-build-isolation
-```
+## 7. 功能入口（Web）
 
-#### Install wheel
+| 路径 | 用途 |
+|------|------|
+| `/` | 角色列表 |
+| `/characters/:id/offline-videos` | 离线视频管理（待机/动作/唱歌成片） |
+| `/launch/:id/offline-live` | **离线直播**开播（待机、动作、弹幕、TTS/LLM 管线） |
+| `/session/:sessionId` | 会话页（实时或离线直播） |
+| `/settings` | 全局密钥与组件 |
 
-```bash
-pip install dist/*.whl --force-reinstall --no-deps
-```
+离线直播成片命名约定（视频管理标题前缀）：**待机-**、**动作-**、**唱歌-**，供开播页筛选。
 
-#### Enable in CyberVerse
+弹幕：Go 内置调度；抖音需本机 **DyHub**（默认 `http://127.0.0.1:8757`），详见 [live-danmaku/README.md](./live-danmaku/README.md)。
 
-In `config/avatar_models/live_act.yaml` (or the web UI), under `live_act`:
+---
 
-```yaml
-fp8_gemm: false
-fp4_gemm: true
-```
+## 8. 调试清单
 
-Restart the inference service after changing these flags.
+1. **health**：`curl -s http://127.0.0.1:6006/api/v1/health`  
+2. **推理日志**：是否出现 `CyberVerse Inference Server started on port 50051`  
+3. **Go 日志**：`CyberVerse Server starting on 0.0.0.0:6006`  
+4. **浏览器控制台**：`[switch]` 日志（待机 / 回答片切换）；WS 是否连上同源  
+5. **Avatar 卡顿**：Inference 日志 **RTP**；参考 README 旧版 QA 或 [部署文档.md](./部署文档.md) 中的分辨率/帧率表  
+6. **改 config 后**：改 Avatar 参数 → **重启 inference**；改端口/CORS → **重启 Go**
 
-### SageAttention & FlashAttention (Optional)
+---
 
-```bash
-# SageAttention (source build)
-git clone https://github.com/thu-ml/SageAttention.git
-cd SageAttention
-export EXT_PARALLEL=4 NVCC_APPEND_FLAGS="--threads 8" MAX_JOBS=32 # Optional
-python setup.py install
-```
+## 9. 仓库与提交说明
 
-```bash
-# FlashAttention (optional)
-wget -O flash_attn-2.8.1+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl \
-  "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1%2Bcu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+- **应提交**：源码、`infra/config` 模板、`scripts/`、文档、`frontend/package.json` 等。  
+- **不应提交**：见 [.gitignore](./.gitignore)（`config/`、权重、`data/`、`.env`、构建产物、日志、本地 MP4 等）。
 
-pip install flash_attn-2.8.1+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
-```
+---
 
-## QA — Self-Check
+## 10. 获取帮助
 
-Use this section when avatar video **stutters, freezes, or falls behind** audio. The first step is to confirm whether inference can keep up with playback.
+- Issue：[GitHub Issues](https://github.com/dsd2077/CyberVerse/issues)  
+- 云镜像（免手工装环境）：README.zh-CN.md 中的 AutoDL / 优云智算链接  
 
-### Check RTP from inference logs
-
-**RTP** (real-time performance factor) compares how long a chunk took to generate versus how long that chunk lasts at the configured FPS:
-
-```text
-RTP = elapsed / (frames / fps)
-```
-
-| RTP | Meaning |
-|-----|---------|
-| **&lt; 1** | Inference is faster than playback — headroom for realtime streaming |
-| **= 1** | Exactly realtime |
-| **&gt; 1** | Inference is slower than playback — production cannot keep up with consumption; video will lag or stutter |
-
-Watch the inference terminal (`make inference`) while the character is speaking. Look for **LiveAct** or **FlashHead** chunk lines.
-
-**LiveAct example (RTP &gt; 1 — cannot keep realtime):**
-
-```text
-INFO:inference.plugins.avatar.live_act_plugin:LiveAct chunk: idx=2 frames=32 320x480 fps=20 iter=2 elapsed=1.870s is_final=False
-```
-
-- Playback duration: `32 / 20 = 1.6` s  
-- RTP: `1.870 / 1.6 ≈ 1.17` (**&gt; 1** → too slow for 320×480 @ 20 fps on this GPU)
-
-**FlashHead** logs use the same idea (`elapsed` vs `num_frames` / `fps`):
-
-```text
-INFO:...FlashHead video chunk generated: chunk_index=1 num_frames=33 512x512 fps=20 ... elapsed=2.100s
-```
-
-Here RTP = `2.100 / (33/20) ≈ 1.27` — also above realtime.
-
-### What to do when RTP &gt; 1
-
-1. **Lower resolution or quality** — e.g. LiveAct `infer_params.size`, FlashHead `height` / `width`, or FlashHead `model_type: "lite"` instead of `"pro"`.
-2. **Add compute** — more GPUs (`runtime.world_size`, `cuda_visible_devices`), enable FP8/FP4 GEMM or compile options where supported, or use a faster GPU.
-3. **Match the support list** — for local GPU models, pick a resolution/FPS/GPU row marked **Yes** under **Real-time?** in [Realtime Digital Human Video Interaction](#realtime-digital-human-video-interaction) above.
-
-Pure voice mode (`inference.avatar.enabled: false`) does not use avatar RTP. Baidu Xiling and Xunfei digital humans are cloud APIs and do not use local avatar RTP either; stutter there is usually network/WebRTC or upstream voice latency — see [Remote Access Notes](#remote-access-notes).
-
-## Remote Access Notes
-
-When `streaming_mode: direct` uses the embedded TURN server, the browser must be able to reach the server's `8443/TCP`. If the page loads but audio/video never connects, or the server logs show `ICE connection state: failed` or `publish timeout waiting for connection`, first check whether your machine can reach port `8443` on the server:
-
-```bash
-nc -vz <server-ip> 8443
-```
-
-If `8443` is not reachable, the usual cause is a cloud security group, firewall, or NAT restriction. In that case, you can forward your local `8443` to the server through an SSH tunnel:
-
-```bash
-ssh -L 8443:127.0.0.1:8443 user@host -p port
-```
-
-After the tunnel is established, the browser will access the remote TURN service through local `127.0.0.1:8443`.
-
-If you want the browser to connect to the remote server directly instead of through an SSH tunnel, set `pipeline.ice_public_ip` in `config/cyberverse.yaml` to the server's public IP or domain. If you are using an SSH tunnel, you can keep the default value (`127.0.0.1`).
-
-## Roadmap
-
-Roadmap is maintained in Yuque / Roadmap 已迁移至语雀: [CyberVerse Requirements Management](https://www.yuque.com/u32995802/ilet4r/qu7lhylertuzx7dh?singleDoc#).
-
-## Community
-
-<p align="center">
-  <a href="docs/assets/wechat.jpg"><img src="docs/assets/wechat.jpg" alt="CyberVerse maintainer WeChat QR code" width="320"/></a>
-</p>
-
-<p align="center">Scan the QR code or add the maintainer on WeChat: <strong>wx_dsd2077</strong>. Please note <strong>CyberVerse</strong> in your friend request; we will invite you to the <strong>CyberVerse Digital Human Technology Group</strong>.</p>
-
-## Star History
-
-<p align="center">
-  <a href="https://star-history.dera.page/#Lynpoint/CyberVerse&Date">
-    <img src="https://star-history.dera.page/svg?repos=Lynpoint/CyberVerse&type=Date" alt="Star History Chart" width="100%"/>
-  </a>
-</p>
-
-## License
-
-GNU General Public License v3.0 — see [LICENSE](LICENSE).
-
-## Acknowledgements
-
-- [SoulX-FlashHead](https://github.com/Soul-AILab/SoulX-FlashHead) — Avatar model by Soul AI Lab
-
-- [SoulX-LiveAct](https://github.com/Soul-AILab/SoulX-LiveAct) - Avatar model by Soul AI Lab
-- [MuseTalk](https://github.com/TMElyralab/MuseTalk) — Real-time lip-sync model by TME Lyra Lab
-- [Pion](https://github.com/pion/webrtc) — Go WebRTC implementation
-- [Linux.do](https://linux.do/)
+英文版功能说明与 Demo 见 [README.zh-CN.md](./README.zh-CN.md)（结构与历史 [README.md](https://github.com/dsd2077/CyberVerse/blob/main/README.md) 英文营销版类似，以仓库 `main` 为准）。

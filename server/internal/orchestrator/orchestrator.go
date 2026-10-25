@@ -1834,7 +1834,7 @@ loop:
 func (o *Orchestrator) SetupSession(ctx context.Context, session *Session, roomMgr *livekit.RoomManager) (mediapeer.MediaPeer, []string, error) {
 	warnings := []string{}
 	isExternalAvatarSession := o.isBaiduXilingSession(session) || o.isXunfeiAvatarSession(session)
-	if !isExternalAvatarSession && o.useSilentInference() && session != nil && o.hasOtherSilentAvatarRuntime(session.ID) {
+	if !isExternalAvatarSession && !session.IsOfflineLive() && o.useSilentInference() && session != nil && o.hasOtherSilentAvatarRuntime(session.ID) {
 		return nil, warnings, errors.New("silent_inference currently supports one active avatar session")
 	}
 
@@ -2101,6 +2101,24 @@ func (o *Orchestrator) standardCharacterConfig(session *Session) (character.Comp
 		}
 	}
 
+	session.mu.RLock()
+	if p := strings.TrimSpace(session.StandardLLMProvider); p != "" {
+		components.LLM = p
+	}
+	if m := strings.TrimSpace(session.StandardLLMModel); m != "" {
+		components.LLMModel = m
+	}
+	if p := strings.TrimSpace(session.StandardTTSProvider); p != "" {
+		components.TTS = p
+	}
+	if m := strings.TrimSpace(session.StandardTTSModel); m != "" {
+		components.TTSModel = m
+	}
+	if v := strings.TrimSpace(session.StandardTTSVoice); v != "" {
+		voice = v
+	}
+	session.mu.RUnlock()
+
 	if voice == "" && components.TTS == "qwen" {
 		voice = "Momo"
 	}
@@ -2315,6 +2333,11 @@ func (o *Orchestrator) resumeVoiceAudioStream(sessionID string) error {
 func (o *Orchestrator) handleStandardTextInput(ctx context.Context, session *Session, sessionID string, text string) error {
 	o.stopPipelineAndWait(session, sessionID, false)
 
+	inputOpts, ephemeralTurn := textInputOptionsFromContext(ctx)
+	if ephemeralTurn && inputOpts.EphemeralUserTurn {
+		ctx = withEphemeralUserText(ctx, text)
+	}
+
 	pipeCtx, cancel := context.WithCancel(ctx)
 	session.mu.Lock()
 	session.PipelineCancel = cancel
@@ -2322,7 +2345,9 @@ func (o *Orchestrator) handleStandardTextInput(ctx context.Context, session *Ses
 
 	turnSeq := session.MarkTurnStarted()
 	o.advancePlaybackEpoch(sessionID, turnSeq)
-	session.AddMessage(ChatMessage{Role: "user", Content: text, TurnSeq: turnSeq})
+	if !(ephemeralTurn && inputOpts.EphemeralUserTurn) {
+		session.AddMessage(ChatMessage{Role: "user", Content: text, TurnSeq: turnSeq})
+	}
 	pipelineSeq := session.MarkPipelineRunning()
 	go o.runStandardPipeline(pipeCtx, session, sessionID, pipelineSeq, turnSeq)
 	return nil
@@ -2889,6 +2914,9 @@ func (o *Orchestrator) runStandardPipeline(ctx context.Context, session *Session
 	pipelineStart := time.Now()
 
 	components, voice, speakingStyle, language := o.standardCharacterConfig(session)
+	if session.IsOfflineLive() {
+		components.TTSModel = NormalizeOfflineLiveTTSModel(components.TTSModel)
+	}
 
 	// Prepare LLM messages
 	history := session.HistorySnapshot()
@@ -2903,7 +2931,18 @@ func (o *Orchestrator) runStandardPipeline(ctx context.Context, session *Session
 			ragContext = formatRAGContext(results)
 		}
 	}
-	if systemPrompt := o.standardSystemPromptWithRAG(session, ragContext); systemPrompt != "" {
+	inputOpts, inputOptsSet := textInputOptionsFromContext(ctx)
+	systemPrompt := strings.TrimSpace(o.standardSystemPromptWithRAG(session, ragContext))
+	if inputOptsSet {
+		if suffix := strings.TrimSpace(inputOpts.SystemPromptSuffix); suffix != "" {
+			if systemPrompt != "" {
+				systemPrompt = systemPrompt + "\n\n" + suffix
+			} else {
+				systemPrompt = suffix
+			}
+		}
+	}
+	if systemPrompt != "" {
 		messages = append(messages, inference.ChatMessage{Role: "system", Content: systemPrompt})
 	}
 	for _, item := range dialogContext {
@@ -2916,6 +2955,9 @@ func (o *Orchestrator) runStandardPipeline(ctx context.Context, session *Session
 	}
 	for _, m := range history {
 		messages = append(messages, inference.ChatMessage{Role: m.Role, Content: m.Content})
+	}
+	if ephemeralText, ok := ephemeralUserTextFromContext(ctx); ok {
+		messages = append(messages, inference.ChatMessage{Role: "user", Content: ephemeralText})
 	}
 	visualCfg := o.visualInputConfig()
 	visualFrames := session.LatestVisualFrames(time.Now(), time.Duration(visualCfg.FrameTTLMS)*time.Millisecond)
@@ -2941,12 +2983,17 @@ func (o *Orchestrator) runStandardPipeline(ctx context.Context, session *Session
 	}
 
 	// 1. Start LLM stream
-	llmCh, llmErrCh := o.inference.GenerateLLMStream(ctx, sessionID, messages, inference.LLMConfig{
+	llmCfg := inference.LLMConfig{
 		Temperature: 0.7,
 		Provider:    components.LLM,
-	})
+		Model:       components.LLMModel,
+	}
+	if inputOptsSet && inputOpts.MaxLLMTokens > 0 {
+		llmCfg.MaxTokens = inputOpts.MaxLLMTokens
+	}
+	llmCh, llmErrCh := o.inference.GenerateLLMStream(ctx, sessionID, messages, llmCfg)
 
-	// 2. Collect the full LLM response, then feed it to TTS once.
+	// 2. Collect the full LLM response, then feed the complete text to TTS once.
 	textCh := make(chan string, 1)
 	fullResponseCh = make(chan string, 1) // captures full LLM response for history
 	go func() {
@@ -2963,6 +3010,9 @@ func (o *Orchestrator) runStandardPipeline(ctx context.Context, session *Session
 
 		finish := func(sendTTS bool) {
 			text := finalText()
+			if inputOptsSet && inputOpts.MaxReplyRunes > 0 {
+				text = truncateRunes(text, inputOpts.MaxReplyRunes)
+			}
 			if sendTTS && text != "" {
 				select {
 				case textCh <- text:
@@ -3097,6 +3147,50 @@ func (o *Orchestrator) runStandardPipeline(ctx context.Context, session *Session
 				o.broadcastError(sessionID, "Speech synthesis failed")
 				return
 			}
+		}
+		return
+	}
+
+	if session.IsOfflineLive() {
+		for ttsAudioCh != nil || ttsErrCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case chunk, ok := <-ttsAudioCh:
+				if !ok {
+					ttsAudioCh = nil
+					continue
+				}
+				pcm, sampleRate := audioChunkToPCM16(chunk)
+				if len(pcm) == 0 {
+					continue
+				}
+				appendRecAudio(pcm, sampleRate)
+			case err, ok := <-ttsErrCh:
+				if !ok {
+					ttsErrCh = nil
+					continue
+				}
+				if err == nil {
+					continue
+				}
+				log.Printf("TTS stream error for session %s: %v", sessionID, err)
+				o.broadcastError(sessionID, "Speech synthesis failed")
+				return
+			}
+		}
+		recMu.Lock()
+		pcmCopy := append([]byte(nil), recAudioBuf...)
+		sr := recAudioSR
+		dir := recSessionDir
+		recMu.Unlock()
+		if err := o.GenerateOfflineLiveTurnVideo(ctx, session, sessionID, turnSeq, pcmCopy, sr, dir); err != nil {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return
+			}
+			log.Printf("offline_live std turn video failed session=%s turn=%d: %v", sessionID, turnSeq, err)
+			o.broadcastError(sessionID, "Offline answer video generation failed")
+			return
 		}
 		return
 	}
@@ -3299,6 +3393,14 @@ func (o *Orchestrator) HandleAudioStream(ctx context.Context, sessionID string, 
 	session, err := o.sessionMgr.Get(sessionID)
 	if err != nil {
 		return err
+	}
+
+	if session.IsOfflineLive() {
+		go func() {
+			for range audioCh {
+			}
+		}()
+		return nil
 	}
 
 	if session.Mode == ModeStandard {
@@ -4372,6 +4474,19 @@ func (o *Orchestrator) runVoiceLLMPipelineWithConfig(
 					sendBaiduVoiceAudio(currentTurn, audio, false)
 				} else if o.isXunfeiAvatarSession(session) {
 					sendXunfeiVoiceAudio(currentTurn, audio)
+				} else if session.IsOfflineLive() {
+					// Buffer PCM only; answer video is generated after the turn audio completes.
+					if currentTurn.firstAvatarAudioAt.IsZero() && len(pcm) > 0 {
+						currentTurn.firstAvatarAudioAt = time.Now()
+						logVoiceTrace(
+							"go_offline_live_audio_buffered",
+							sessionID,
+							currentTurn.seq,
+							currentTurn.replyID,
+							currentTurn.questionID,
+							currentTurn.userFinalAt,
+						)
+					}
 				} else if !o.AvatarEnabled() {
 					if len(pcm) > 0 {
 						if !currentTurn.audioOnlyStarted && session.IsCurrentPipeline(pipelineSeq) && session.IsCurrentTurn(currentTurn.seq) {
@@ -4446,6 +4561,24 @@ func (o *Orchestrator) runVoiceLLMPipelineWithConfig(
 			turn := currentTurn
 			currentTurn = nil
 			currentTurnDone = nil
+			if session.IsOfflineLive() {
+				saveCompletedTurn(turn)
+				pcmCopy := append([]byte(nil), turn.recAudioBuf...)
+				sr := turn.recAudioSR
+				seq := turn.seq
+				dir := turn.sessionDir
+				go func() {
+					genErr := o.GenerateOfflineLiveTurnVideo(context.Background(), session, sessionID, seq, pcmCopy, sr, dir)
+					if genErr != nil {
+						log.Printf("offline_live turn video failed session=%s turn=%d: %v", sessionID, seq, genErr)
+						if session.IsCurrentTurn(seq) {
+							o.broadcastError(sessionID, "Offline answer video generation failed")
+						}
+					}
+					setIdleIfCurrent(seq)
+				}()
+				continue
+			}
 			saveCompletedTurn(turn)
 			setIdleIfCurrent(turn.seq)
 		case err, ok := <-errCh:
@@ -4831,6 +4964,50 @@ func (o *Orchestrator) runAssistantSpeechPipeline(ctx context.Context, session *
 					return
 				}
 			}
+		}
+		return
+	}
+
+	if session.IsOfflineLive() {
+		var pcmBuf []byte
+		sampleRate := 16000
+		for ttsAudioCh != nil || ttsErrCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case chunk, ok := <-ttsAudioCh:
+				if !ok {
+					ttsAudioCh = nil
+					continue
+				}
+				pcm, sr := audioChunkToPCM16(chunk)
+				if len(pcm) == 0 {
+					continue
+				}
+				pcmBuf = append(pcmBuf, pcm...)
+				if sr > 0 {
+					sampleRate = sr
+				}
+			case err, ok := <-ttsErrCh:
+				if !ok {
+					ttsErrCh = nil
+					continue
+				}
+				if err != nil {
+					log.Printf("assistant speech TTS error for session %s: %v", sessionID, err)
+					o.broadcastError(sessionID, "Speech synthesis failed")
+					return
+				}
+			}
+		}
+		dir := o.sessionRecordingDir(session)
+		if err := o.GenerateOfflineLiveTurnVideo(ctx, session, sessionID, turnSeq, pcmBuf, sampleRate, dir); err != nil {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return
+			}
+			log.Printf("offline_live assistant speech video failed session=%s turn=%d: %v", sessionID, turnSeq, err)
+			o.broadcastError(sessionID, "Offline answer video generation failed")
+			return
 		}
 		return
 	}

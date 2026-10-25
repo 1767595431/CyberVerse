@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,14 +20,36 @@ import (
 )
 
 type CreateSessionRequest struct {
-	Mode        string `json:"mode"`         // "omni" or "standard" ("voice_llm" accepted as a legacy alias)
-	CharacterID string `json:"character_id"` // which character this session is for
+	Mode          string `json:"mode"`           // "omni" or "standard" ("voice_llm" accepted as a legacy alias)
+	CharacterID   string `json:"character_id"`   // which character this session is for
+	PlaybackMode  string `json:"playback_mode"`  // "" (realtime) or "offline_live"
+	LLMProvider   string `json:"llm_provider,omitempty"`
+	LLMModel      string `json:"llm_model,omitempty"`
+	TTSProvider   string `json:"tts_provider,omitempty"`
+	TTSModel      string `json:"tts_model,omitempty"`
+	TTSVoice           string                         `json:"tts_voice,omitempty"`
+	IdleVideoURL       string                         `json:"idle_video_url,omitempty"`
+	OfflineLiveActions []offlineLiveActionClipRequest `json:"offline_live_actions,omitempty"`
+	OfflineLiveSongs   []offlineLiveActionClipRequest `json:"offline_live_songs,omitempty"`
+	DanmakuPlatform    string                         `json:"danmaku_platform,omitempty"`
+	BilibiliRoomID     int                            `json:"bilibili_room_id,omitempty"`
+	DouyinRoom         string                         `json:"douyin_room,omitempty"`
+	DouyinRelay        string                         `json:"douyin_relay,omitempty"`
 }
+
+const (
+	offlineLiveDefaultLLMProvider = "qwen"
+	offlineLiveDefaultLLMModel    = "qwen3.6-plus"
+	offlineLiveDefaultTTSProvider = "qwen"
+	offlineLiveDefaultTTSModel    = "qwen3-tts-flash-realtime"
+	offlineLiveDefaultTTSVoice    = "Serena"
+)
 
 type CreateSessionResponse struct {
 	SessionID     string                     `json:"session_id"`
 	Mode          string                     `json:"mode"`
 	StreamingMode string                     `json:"streaming_mode"`
+	PlaybackMode  string                     `json:"playback_mode,omitempty"`
 	AvatarEnabled bool                       `json:"avatar_enabled"`
 	IdleStrategy  string                     `json:"idle_strategy"`
 	AudioInput    *AudioInputResponse        `json:"audio_input,omitempty"`
@@ -37,9 +60,15 @@ type CreateSessionResponse struct {
 	Token         string                     `json:"livekit_token,omitempty"`
 	IdleVideoURL  string                     `json:"idle_video_url,omitempty"`
 	IdleVideoURLs []string                   `json:"idle_video_urls,omitempty"`
-	IdleImageURL  string                     `json:"idle_image_url,omitempty"`
-	Warnings      []string                   `json:"warnings,omitempty"`
-	VisualInput   *VisualInputResponse       `json:"visual_input,omitempty"`
+	IdleImageURL       string                            `json:"idle_image_url,omitempty"`
+	OfflineLiveActions []orchestrator.OfflineLiveActionClip `json:"offline_live_actions,omitempty"`
+	OfflineLiveSongs   []orchestrator.OfflineLiveActionClip `json:"offline_live_songs,omitempty"`
+	DanmakuPlatform    string                             `json:"danmaku_platform,omitempty"`
+	BilibiliRoomID     int                                `json:"bilibili_room_id,omitempty"`
+	DouyinRoom         string                             `json:"douyin_room,omitempty"`
+	DouyinRelay        string                             `json:"douyin_relay,omitempty"`
+	Warnings           []string                           `json:"warnings,omitempty"`
+	VisualInput        *VisualInputResponse              `json:"visual_input,omitempty"`
 }
 
 type AudioInputResponse struct {
@@ -240,6 +269,16 @@ func (r *Router) handleCreateSession(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	playbackMode := orchestrator.NormalizePlaybackMode(body.PlaybackMode)
+	if playbackMode == orchestrator.PlaybackModeOfflineLive {
+		if isBaiduXilingCharacter || isXunfeiCharacter || isViduCharacter {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "offline_live playback requires a local avatar character"})
+			return
+		}
+		// Offline live: text/API → LLM → TTS → offline answer video (no ASR, no omni voice).
+		mode = orchestrator.ModeStandard
+	}
+
 	sessionID := uuid.New().String()
 	session, err := r.sessionMgr.Create(sessionID, mode, body.CharacterID)
 	if err != nil {
@@ -249,6 +288,44 @@ func (r *Router) handleCreateSession(w http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(w, status, ErrorResponse{Error: err.Error()})
 		return
+	}
+	if playbackMode != orchestrator.PlaybackModeRealtime {
+		session.SetPlaybackMode(playbackMode)
+	}
+	if playbackMode == orchestrator.PlaybackModeOfflineLive || bodyHasStandardPipelineOverrides(body) {
+		llmProvider, llmModel, ttsProvider, ttsModel, ttsVoice := resolveStandardPipelineOverrides(body, playbackMode)
+		session.SetStandardPipelineOverrides(llmProvider, llmModel, ttsProvider, ttsModel, ttsVoice)
+	}
+	if playbackMode == orchestrator.PlaybackModeOfflineLive {
+		actions := offlineLiveActionsFromRequest(body.OfflineLiveActions)
+		songs := offlineLiveActionsFromRequest(body.OfflineLiveSongs)
+		idleURL := strings.TrimSpace(body.IdleVideoURL)
+		session.SetOfflineLiveMedia(idleURL, actions, songs)
+		dmPlatform := strings.ToLower(strings.TrimSpace(body.DanmakuPlatform))
+		if dmPlatform != "" && dmPlatform != "none" {
+			if dmPlatform == "bilibili" && body.BilibiliRoomID <= 0 {
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "bilibili_room_id is required for bilibili danmaku"})
+				return
+			}
+			if dmPlatform == "douyin" && strings.TrimSpace(body.DouyinRoom) == "" {
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "douyin_room is required for douyin danmaku"})
+				return
+			}
+			if dmPlatform != "bilibili" && dmPlatform != "douyin" {
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "danmaku_platform must be none, bilibili, or douyin"})
+				return
+			}
+			relay := strings.TrimSpace(body.DouyinRelay)
+			if relay == "" {
+				relay = "http://127.0.0.1:8757"
+			}
+			session.SetDanmakuConfig(orchestrator.DanmakuConfig{
+				Platform:       dmPlatform,
+				BilibiliRoomID: body.BilibiliRoomID,
+				DouyinRoom:     strings.TrimSpace(body.DouyinRoom),
+				DouyinRelay:    relay,
+			})
+		}
 	}
 	if ownerID != "" {
 		session.SetOwnerID(ownerID)
@@ -275,6 +352,9 @@ func (r *Router) handleCreateSession(w http.ResponseWriter, req *http.Request) {
 		Mode:         modeString(mode),
 		IdleStrategy: config.AvatarIdleStrategyCachedVideo,
 	}
+	if playbackMode == orchestrator.PlaybackModeOfflineLive {
+		resp.PlaybackMode = string(playbackMode)
+	}
 	if r.orch != nil {
 		resp.IdleStrategy = r.orch.AvatarIdleStrategy()
 		if !r.orch.AvatarEnabled() {
@@ -286,14 +366,22 @@ func (r *Router) handleCreateSession(w http.ResponseWriter, req *http.Request) {
 			resp.IdleStrategy = config.AvatarIdleStrategyCachedVideo
 		}
 	}
+	// Offline live always uses cached idle MP4 on the frontend; never silent inference.
+	if playbackMode == orchestrator.PlaybackModeOfflineLive {
+		resp.IdleStrategy = config.AvatarIdleStrategyCachedVideo
+	}
 	resp.VisualInput = r.visualInputResponseForSession(session)
 	resp.AudioInput = r.audioInputResponseForSession(session)
 	if isViduCharacter {
 		resp.VisualInput = nil
 		resp.AudioInput = &AudioInputResponse{Enabled: false}
 	}
+	if playbackMode == orchestrator.PlaybackModeOfflineLive {
+		resp.VisualInput = nil
+		resp.AudioInput = &AudioInputResponse{Enabled: false}
+	}
 
-	useCachedIdleVideo := resp.IdleStrategy != config.AvatarIdleStrategySilentInference
+	useCachedIdleVideo := resp.IdleStrategy != config.AvatarIdleStrategySilentInference || playbackMode == orchestrator.PlaybackModeOfflineLive
 	if isBaiduXilingCharacter {
 		baiduConfig, err := buildBaiduXilingSessionConfig(sessionCharacter)
 		if err != nil {
@@ -360,10 +448,22 @@ func (r *Router) handleCreateSession(w http.ResponseWriter, req *http.Request) {
 		}()
 	} else if r.orch != nil && body.CharacterID != "" && useCachedIdleVideo && (sessionCharacter == nil || sessionCharacter.AvatarBackend == character.AvatarBackendLocalImage) {
 		target := r.currentIdleVideoTarget(req.Context())
+		if !target.valid() || playbackMode == orchestrator.PlaybackModeOfflineLive {
+			if configured := r.configuredIdleVideoTarget(); configured.valid() {
+				if !target.valid() {
+					target = configured
+				}
+			}
+		}
 		// Return any already-cached idle video URLs immediately; generation happens in background.
 		if char, err := r.charStore.Get(body.CharacterID); err == nil {
 			resp.IdleImageURL = characterStandbyImageURL(char)
 			resp.IdleVideoURLs = r.idleVideoURLs(char.ID, char.ActiveImage, target)
+			if len(resp.IdleVideoURLs) == 0 && playbackMode == orchestrator.PlaybackModeOfflineLive {
+				if configured := r.configuredIdleVideoTarget(); configured.valid() {
+					resp.IdleVideoURLs = r.idleVideoURLs(char.ID, char.ActiveImage, configured)
+				}
+			}
 			if len(resp.IdleVideoURLs) > 0 {
 				resp.IdleVideoURL = resp.IdleVideoURLs[0]
 			}
@@ -371,7 +471,8 @@ func (r *Router) handleCreateSession(w http.ResponseWriter, req *http.Request) {
 		// Trigger background generation only if the current-resolution idle video does not exist yet.
 		// Once ready, push the URLs to the frontend via WebSocket so the idle
 		// videos can start playing without a page reload.
-		if len(resp.IdleVideoURLs) == 0 && r.orch.AvatarEnabled() {
+		// Offline live prefers a preinstalled idle MP4 and skips auto-generation when already present.
+		if len(resp.IdleVideoURLs) == 0 && r.orch.AvatarEnabled() && playbackMode != orchestrator.PlaybackModeOfflineLive {
 			char, _ := r.charStore.Get(body.CharacterID)
 			activeImage := ""
 			if char != nil {
@@ -456,6 +557,28 @@ func (r *Router) handleCreateSession(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	if playbackMode == orchestrator.PlaybackModeOfflineLive {
+		idleURL, actions, songs := session.OfflineLiveMediaSnapshot()
+		if idleURL != "" {
+			resp.IdleVideoURL = idleURL
+			resp.IdleVideoURLs = []string{idleURL}
+		}
+		if len(actions) > 0 {
+			resp.OfflineLiveActions = actions
+		}
+		if len(songs) > 0 {
+			resp.OfflineLiveSongs = songs
+		}
+		dmCfg := session.DanmakuConfigSnapshot()
+		if dmCfg.Platform != "" && dmCfg.Platform != "none" {
+			resp.DanmakuPlatform = dmCfg.Platform
+			resp.BilibiliRoomID = dmCfg.BilibiliRoomID
+			resp.DouyinRoom = dmCfg.DouyinRoom
+			resp.DouyinRelay = dmCfg.DouyinRelay
+			// Danmaku listener starts only when the user taps Connect on the session page.
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -507,6 +630,36 @@ func characterStandbyImageURL(c *character.Character) string {
 	}
 }
 
+func (r *Router) handleGetSessionTurnVideo(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	turnRaw := req.PathValue("turn")
+	session, err := r.sessionMgr.Get(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: err.Error()})
+		return
+	}
+	if !r.authorizeKanshanSessionAccess(w, req, session) {
+		return
+	}
+	if r.orch == nil {
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "orchestrator unavailable"})
+		return
+	}
+	turnSeq, err := strconv.ParseUint(strings.TrimSpace(turnRaw), 10, 64)
+	if err != nil || turnSeq == 0 {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid turn seq"})
+		return
+	}
+	path, err := r.orch.ResolveOfflineLiveTurnVideoPath(id, turnSeq)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "turn video not found"})
+		return
+	}
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(w, req, path)
+}
+
 func (r *Router) handleDeleteSession(w http.ResponseWriter, req *http.Request) {
 	id := req.PathValue("id")
 	session, err := r.sessionMgr.Get(id)
@@ -517,6 +670,8 @@ func (r *Router) handleDeleteSession(w http.ResponseWriter, req *http.Request) {
 	if !r.authorizeKanshanSessionAccess(w, req, session) {
 		return
 	}
+
+	r.stopSessionDanmaku(id)
 
 	// Teardown orchestrator resources
 	if r.orch != nil {
@@ -721,6 +876,40 @@ func (r *Router) handleVisualInputMessage(sessionID string, _ ws.WSMessage, fn f
 			})
 		}
 	}
+}
+
+func bodyHasStandardPipelineOverrides(body CreateSessionRequest) bool {
+	return strings.TrimSpace(body.LLMProvider) != "" ||
+		strings.TrimSpace(body.LLMModel) != "" ||
+		strings.TrimSpace(body.TTSProvider) != "" ||
+		strings.TrimSpace(body.TTSModel) != "" ||
+		strings.TrimSpace(body.TTSVoice) != ""
+}
+
+func resolveStandardPipelineOverrides(body CreateSessionRequest, playbackMode orchestrator.PlaybackMode) (string, string, string, string, string) {
+	llmProvider := strings.TrimSpace(body.LLMProvider)
+	llmModel := strings.TrimSpace(body.LLMModel)
+	ttsProvider := strings.TrimSpace(body.TTSProvider)
+	ttsModel := strings.TrimSpace(body.TTSModel)
+	ttsVoice := strings.TrimSpace(body.TTSVoice)
+	if playbackMode == orchestrator.PlaybackModeOfflineLive {
+		if llmProvider == "" {
+			llmProvider = offlineLiveDefaultLLMProvider
+		}
+		if llmModel == "" {
+			llmModel = offlineLiveDefaultLLMModel
+		}
+		if ttsProvider == "" {
+			ttsProvider = offlineLiveDefaultTTSProvider
+		}
+		if ttsModel == "" {
+			ttsModel = offlineLiveDefaultTTSModel
+		}
+		if ttsVoice == "" {
+			ttsVoice = offlineLiveDefaultTTSVoice
+		}
+	}
+	return llmProvider, llmModel, ttsProvider, ttsModel, ttsVoice
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -54,10 +54,10 @@ func directVoiceTrace(event string, label string, format string, args ...any) {
 type SignalingFunc func(sessionID string, msg map[string]any)
 
 const (
-	defaultDirectVideoBitrateKbps = 1800
+	defaultDirectVideoBitrateKbps     = 6000
 	minDirectVideoBitrateKbps     = 500
-	maxDirectVideoBitrateKbps     = 1800
-	videoBitrateSafetyPercent     = 65
+	maxDirectVideoBitrateKbps     = 8000
+	videoBitrateSafetyPercent     = 85
 
 	maxAudioDelayMS          int64 = 800
 	audioDelayStepMS         int64 = 160

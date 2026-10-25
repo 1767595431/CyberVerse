@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, watchEffect, unref, onUnmounted, computed, onMounted } from 'vue'
+import { ref, watch, watchEffect, unref, onUnmounted, computed, onMounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import VideoPlayer from '../components/VideoPlayer.vue'
@@ -9,9 +9,23 @@ import ViduS1Player from '../components/ViduS1Player.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import { useWebRTC } from '../composables/useWebRTC'
 import { useDirectWebRTC } from '../composables/useDirectWebRTC'
-import { useChat, type BaiduXilingAudioEvent } from '../composables/useChat'
+import {
+  useChat,
+  type BaiduXilingAudioEvent,
+  type ChatMessage,
+  type DanmakuFeedItem,
+} from '../composables/useChat'
 import { useVisualInput, type VisualInputConfig } from '../composables/useVisualInput'
-import { deleteSession } from '../services/api'
+import {
+  connectDanmaku,
+  disconnectDanmaku,
+  deleteSession,
+  fetchDanmakuFeed,
+  triggerOfflineLiveAction,
+  triggerOfflineLiveSong,
+} from '../services/api'
+import { offlineLiveSongDisplayTitle } from '../utils/offlineLiveVideoTitle'
+import type { OfflineLiveActionClip } from '../types/offlineLive'
 import {
   clearSessionLaunchState,
   loadSessionLaunchState,
@@ -37,6 +51,7 @@ const visualPreviewRef = ref<HTMLVideoElement | null>(null)
 const visualPreviewPosition = ref<{ x: number; y: number } | null>(null)
 const isVisualPreviewDragging = ref(false)
 const elapsed = ref(0)
+const isDisconnecting = ref(false)
 const clockMs = ref(Date.now())
 let timer: ReturnType<typeof setInterval> | null = null
 const showDiag = ref(false)
@@ -96,6 +111,13 @@ function parseVisualInputConfig(): Partial<VisualInputConfig> | undefined {
 const visualInputConfig = computed(() => parseVisualInputConfig())
 const hasVisualInputCapability = computed(() => !!visualInputConfig.value)
 const idleStrategy = computed(() => launchState.value?.idle_strategy || 'cached_video')
+const isOfflineLiveSession = computed(() => launchState.value?.playback_mode === 'offline_live')
+const offlineLiveActions = computed(() => launchState.value?.offline_live_actions ?? [])
+const offlineLiveSongs = computed(() => launchState.value?.offline_live_songs ?? [])
+const danmakuPlatform = computed(() => launchState.value?.danmaku_platform || 'none')
+const showDanmakuFeed = computed(() =>
+  isOfflineLiveSession.value && danmakuPlatform.value !== '' && danmakuPlatform.value !== 'none',
+)
 
 // Both composables are called unconditionally (Vue requirement),
 // but only the active one is wired up.
@@ -204,6 +226,20 @@ const {
   avatarStatus,
   idleVideoUrl,
   idleVideoUrls,
+  answerVideoUrl,
+  offlineLiveActionUrl,
+  offlineLiveActionTitle,
+  requestOfflineLiveActionPlay,
+  requestOfflineLiveSongPlay,
+  stopOfflineLiveSong,
+  offlineLiveOverlayKind,
+  handleOfflineLiveOverlayEnded,
+  danmakuFeed,
+  danmakuStatus,
+  turnVideoProgress,
+  applyDanmakuFeedSnapshot,
+  clearAnswerVideo,
+  clearMessages,
   historyLoading,
   historyHasMore,
   sendText,
@@ -217,6 +253,277 @@ const {
   sendWSMessage,
   isConnected: chatConnected,
 } = useChat(() => sessionId.value)
+
+const danmakuFeedScrollRef = ref<HTMLElement | null>(null)
+const danmakuLinkState = ref<'idle' | 'connecting' | 'connected'>('idle')
+const danmakuConnectBusy = ref(false)
+/** Authoritative list for the danmaku panel (HTTP poll + WS). */
+const displayDanmakuFeed = ref<DanmakuFeedItem[]>([])
+let danmakuStatusPollTimer: ReturnType<typeof setInterval> | null = null
+
+function formatDanmakuChatLine(item: DanmakuFeedItem): string {
+  const user = item.username?.trim()
+  if (user && user !== '观众') {
+    return `${user}：${item.text}`
+  }
+  return item.text
+}
+
+function danmakuFeedItemKey(item: DanmakuFeedItem, index: number): string {
+  return item.messageId || `${item.timestamp}-${index}-${item.username}-${item.text}`
+}
+
+function mergeDanmakuFeedItems(...lists: DanmakuFeedItem[][]): DanmakuFeedItem[] {
+  const map = new Map<string, DanmakuFeedItem>()
+  for (const list of lists) {
+    list.forEach((item, index) => {
+      map.set(danmakuFeedItemKey(item, index), item)
+    })
+  }
+  return [...map.values()]
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+    .slice(-120)
+}
+
+const offlineLiveChatMessages = computed((): ChatMessage[] => {
+  if (!isOfflineLiveSession.value || !showDanmakuFeed.value) {
+    return messages.value
+  }
+  const danmakuMsgs: ChatMessage[] = displayDanmakuFeed.value.map((item, index) => ({
+    id: `danmaku-${danmakuFeedItemKey(item, index)}`,
+    role: 'user',
+    content: formatDanmakuChatLine(item),
+    timestamp: item.timestamp || Date.now(),
+  }))
+  const assistantMsgs = messages.value.filter((m) => m.role === 'assistant')
+  return [...danmakuMsgs, ...assistantMsgs].sort((a, b) => a.timestamp - b.timestamp)
+})
+
+const chatSidebarTitle = computed(() =>
+  isOfflineLiveSession.value && showDanmakuFeed.value
+    ? t('session.offlineLiveDialogTitle')
+    : t('session.chatTitle'),
+)
+
+const showAnswerVideoProgress = computed(() => {
+  if (!isOfflineLiveSession.value) return false
+  if (turnVideoProgress.value != null && turnVideoProgress.value.progress < 100) {
+    return true
+  }
+  return avatarStatus.value === 'processing' && !offlineLiveOverlaySrc.value
+})
+
+const answerVideoProgressPercent = computed(() => {
+  const snap = turnVideoProgress.value
+  if (snap && snap.progress > 0) return snap.progress
+  if (avatarStatus.value === 'processing') return 0
+  return 0
+})
+
+const answerVideoProgressLabel = computed(() => {
+  const snap = turnVideoProgress.value
+  if (snap?.message.trim()) return snap.message.trim()
+  if (avatarStatus.value === 'processing') {
+    return t('session.offlineLiveAnswerVideoWaiting')
+  }
+  return t('session.offlineLiveAnswerVideoProgress')
+})
+
+const activeOfflineLiveActionId = ref('')
+const activeOfflineLiveSongId = ref('')
+
+watch(offlineLiveActionTitle, () => {
+  const title = offlineLiveActionTitle.value.trim()
+  if (!title) {
+    if (!offlineLiveActionUrl.value) {
+      activeOfflineLiveActionId.value = ''
+      activeOfflineLiveSongId.value = ''
+    }
+    return
+  }
+  const actionMatch = offlineLiveActions.value.find(item => item.title === title)
+  if (actionMatch) {
+    activeOfflineLiveActionId.value = actionMatch.id
+    activeOfflineLiveSongId.value = ''
+    return
+  }
+  const songMatch = offlineLiveSongs.value.find(item => item.title === title)
+  if (songMatch) {
+    activeOfflineLiveSongId.value = songMatch.id
+    activeOfflineLiveActionId.value = ''
+  }
+})
+
+watch(offlineLiveActionUrl, (url) => {
+  if (!url) {
+    activeOfflineLiveActionId.value = ''
+    activeOfflineLiveSongId.value = ''
+  }
+})
+
+const isOfflineLiveSongPlaying = computed(() => offlineLiveOverlayKind.value === 'sing')
+
+function mapSnapItemsToFeed(rows: NonNullable<Awaited<ReturnType<typeof fetchDanmakuFeed>>['items']>) {
+  return rows.map((row) => ({
+    username: row.username || '观众',
+    text: row.text,
+    source: row.source || 'unknown',
+    timestamp: row.timestamp,
+    messageId: row.message_id,
+  }))
+}
+
+function syncDisplayDanmakuFromSnap(snap: Awaited<ReturnType<typeof fetchDanmakuFeed>>) {
+  const rows = snap.items ?? []
+  displayDanmakuFeed.value = mergeDanmakuFeedItems(mapSnapItemsToFeed(rows))
+  applyDanmakuFeedSnapshot(snap)
+}
+
+const danmakuRoomLabel = computed(() => {
+  if (danmakuPlatform.value === 'douyin') {
+    const room = launchState.value?.douyin_room?.trim()
+    return room ? `${t('session.danmakuRoomLabel')}: ${room}` : ''
+  }
+  if (danmakuPlatform.value === 'bilibili') {
+    const roomId = launchState.value?.bilibili_room_id
+    return roomId ? `${t('session.danmakuRoomLabel')}: ${roomId}` : ''
+  }
+  return ''
+})
+
+const danmakuLinkStatusLabel = computed(() => {
+  if (danmakuLinkState.value === 'connected') {
+    return t('session.danmakuStatusConnected')
+  }
+  if (danmakuLinkState.value === 'connecting' || danmakuConnectBusy.value) {
+    return t('session.danmakuStatusStarting')
+  }
+  if (danmakuStatus.value === 'error' || danmakuStatus.value.includes('失败') || danmakuStatus.value.toLowerCase().includes('fail')) {
+    return t('session.danmakuStatusError')
+  }
+  return t('session.danmakuStatusIdle')
+})
+
+watch(danmakuStatus, (status) => {
+  if (status === 'douyin' || status === 'bilibili') {
+    danmakuLinkState.value = 'connected'
+  } else if (status === 'disconnected') {
+    danmakuLinkState.value = 'idle'
+  }
+})
+
+async function refreshDanmakuLinkState() {
+  if (!showDanmakuFeed.value || !sessionId.value) return
+  try {
+    const snap = await fetchDanmakuFeed(sessionId.value)
+    syncDisplayDanmakuFromSnap(snap)
+    if (snap.status === 'connected') {
+      danmakuLinkState.value = 'connected'
+    } else if (snap.status === 'connecting') {
+      danmakuLinkState.value = 'connecting'
+    } else if (danmakuLinkState.value !== 'connecting') {
+      danmakuLinkState.value = 'idle'
+    }
+  } catch (e) {
+    console.warn('danmaku feed poll failed:', e)
+  }
+}
+
+function handleClearChatPanel() {
+  clearMessages()
+  if (showDanmakuFeed.value) {
+    displayDanmakuFeed.value = []
+  }
+}
+
+async function handleDisconnectDanmaku() {
+  if (!sessionId.value || danmakuConnectBusy.value) return
+  danmakuConnectBusy.value = true
+  try {
+    await disconnectDanmaku(sessionId.value)
+    danmakuLinkState.value = 'idle'
+    danmakuStatus.value = ''
+  } catch (e) {
+    console.warn('danmaku disconnect failed:', e)
+  } finally {
+    danmakuConnectBusy.value = false
+  }
+}
+
+async function handleConnectDanmaku() {
+  if (!sessionId.value || danmakuConnectBusy.value) return
+  danmakuConnectBusy.value = true
+  danmakuLinkState.value = 'connecting'
+  try {
+    await connectDanmaku(sessionId.value)
+    for (let attempt = 0; attempt < 45; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      const snap = await fetchDanmakuFeed(sessionId.value)
+      syncDisplayDanmakuFromSnap(snap)
+      if (snap.status === 'connected') {
+        danmakuLinkState.value = 'connected'
+        return
+      }
+    }
+  } catch (e) {
+    console.warn('danmaku connect failed:', e)
+    danmakuLinkState.value = 'idle'
+  } finally {
+    danmakuConnectBusy.value = false
+  }
+}
+
+watch(danmakuFeed, (items) => {
+  if (items.length === 0) return
+  displayDanmakuFeed.value = mergeDanmakuFeedItems(displayDanmakuFeed.value, items)
+}, { deep: true })
+
+watch(displayDanmakuFeed, async () => {
+  await nextTick()
+  const el = danmakuFeedScrollRef.value
+  if (el) el.scrollTop = el.scrollHeight
+}, { deep: true })
+
+function invokeOfflineLiveAction(body: { action?: string; action_id?: string; clear?: boolean }) {
+  if (!sessionId.value) return
+  void triggerOfflineLiveAction(sessionId.value, body).catch((e) => {
+    console.warn('offline live action trigger failed:', e)
+  })
+}
+
+async function playOfflineLiveActionClip(clip: OfflineLiveActionClip) {
+  activeOfflineLiveActionId.value = clip.id
+  requestOfflineLiveActionPlay({
+    url: clip.url,
+    actionId: clip.id,
+    title: clip.title,
+  })
+  void invokeOfflineLiveAction({ action: clip.title, action_id: clip.id })
+}
+
+function playOfflineLiveSongClip(clip: OfflineLiveActionClip) {
+  activeOfflineLiveSongId.value = clip.id
+  requestOfflineLiveSongPlay({
+    url: clip.url,
+    songId: clip.id,
+    title: clip.title,
+  })
+  void triggerOfflineLiveSong(sessionId.value, { title: clip.title, song_id: clip.id }).catch((e) => {
+    console.warn('offline live song trigger failed:', e)
+  })
+}
+
+function stopOfflineLiveSongPlayback() {
+  stopOfflineLiveSong()
+  void triggerOfflineLiveSong(sessionId.value, { stop: true }).catch((e) => {
+    console.warn('offline live song stop failed:', e)
+  })
+}
+
+const offlineLiveOverlaySrc = computed(() =>
+  isOfflineLiveSession.value ? (offlineLiveActionUrl.value || answerVideoUrl.value) : '',
+)
+const offlineLiveOverlayLoop = computed(() => false)
 
 registerViduControlHandler((event) => {
   if (event.type === 'vidu_ready') {
@@ -759,9 +1066,12 @@ const launchIdleUrls = launchState.value?.idle_video_urls
 const launchIdleUrl = launchState.value?.idle_video_url || ''
 const idleImageUrl = ref(launchState.value?.idle_image_url || '')
 const voiceAgentVisualImage = computed(() => idleImageUrl.value.trim())
-if (idleStrategy.value === 'cached_video' && launchIdleUrls && launchIdleUrls.length > 0) {
+const useCachedIdleVisual = computed(() =>
+  idleStrategy.value === 'cached_video' || isOfflineLiveSession.value,
+)
+if (useCachedIdleVisual.value && launchIdleUrls && launchIdleUrls.length > 0) {
   idleVideoUrls.value = launchIdleUrls
-} else if (idleStrategy.value === 'cached_video' && launchIdleUrl) {
+} else if (useCachedIdleVisual.value && launchIdleUrl) {
   idleVideoUrls.value = [launchIdleUrl]
 }
 
@@ -780,11 +1090,31 @@ function onStandbyMp4Failed() {
 // about to be published, so we no longer need the "frozen last frame" fallback
 // that previously showed a stale frame for seconds.
 let _prevDisplayMode = ''
-const displayMode = computed<'webrtc' | 'standby' | 'placeholder'>(() => {
+const displayMode = computed<'webrtc' | 'standby' | 'answer' | 'placeholder'>(() => {
   const lastFrameAt = debugState.value.lastVideoFrameAtMs
   const hasFreshRealtimeFrame = !!lastFrameAt && clockMs.value - lastFrameAt < 3000
   const hasRealtimeSize = !!videoElement.value?.videoWidth || !!debugState.value.network?.frameWidth
   const hasStandbyVisual = !standbyDecodeFailed.value && (!!idleVideoUrl.value || !!idleImageUrl.value)
+
+  if (isOfflineLiveSession.value) {
+    let result: 'standby' | 'answer' | 'placeholder'
+    let reason = ''
+    if (offlineLiveActionUrl.value || answerVideoUrl.value) {
+      result = 'answer'
+      reason = offlineLiveActionUrl.value ? 'offline live action clip' : 'offline live answer clip'
+    } else if (hasStandbyVisual) {
+      result = 'standby'
+      reason = `offline live idle (${avatarStatus.value})`
+    } else {
+      result = 'placeholder'
+      reason = 'offline live waiting for idle video'
+    }
+    if (result !== _prevDisplayMode) {
+      console.log(`[switch] ${_prevDisplayMode || 'init'} → ${result} | reason: ${reason}`)
+      _prevDisplayMode = result
+    }
+    return result
+  }
 
   if (idleStrategy.value === 'silent_inference') {
     const result = connectionState.value === 'connected' && (hasFreshRealtimeFrame || hasRealtimeSize)
@@ -822,6 +1152,16 @@ const displayMode = computed<'webrtc' | 'standby' | 'placeholder'>(() => {
   }
   return result
 })
+
+function onAnswerVideoEnded() {
+  if (isOfflineLiveSession.value) {
+    handleOfflineLiveOverlayEnded()
+    return
+  }
+  const player = videoPlayerRef.value as { advanceStandby?: () => void } | null
+  player?.advanceStandby?.()
+  clearAnswerVideo()
+}
 const isLocalVoiceAgentVisualActive = computed(() =>
   !isExternalAvatarSession.value
   && (launchState.value?.avatar_enabled === false || displayMode.value === 'placeholder')
@@ -883,6 +1223,13 @@ onMounted(async () => {
   await chatConnect()
   notifyViduRTCReady()
 
+  if (showDanmakuFeed.value) {
+    void refreshDanmakuLinkState()
+    danmakuStatusPollTimer = setInterval(() => {
+      void refreshDanmakuLinkState()
+    }, 2000)
+  }
+
   // Load conversation history for this character
   if (characterId.value) {
     loadHistory(characterId.value)
@@ -918,6 +1265,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (danmakuStatusPollTimer) clearInterval(danmakuStatusPollTimer)
   stopVisualPreviewDragging()
   stopChatSidebarResize()
   clearBaiduSessionActive()
@@ -947,25 +1295,56 @@ function handleViduPageHide() {
   void requestViduSessionTeardown(true)
 }
 
+function resolveSessionReturnPath(): string {
+  const fromState = launchState.value?.return_path?.trim()
+  if (fromState) {
+    return fromState
+  }
+  const cid = characterId.value
+  if (isOfflineLiveSession.value && cid) {
+    return `/launch/${cid}/offline-live`
+  }
+  if (cid) {
+    return `/launch/${cid}`
+  }
+  return '/characters'
+}
+
 async function handleDisconnect() {
-  visualInput.stop(undefined, true)
-  if (shouldUseMediaPeer.value) {
-    webrtcDisconnect()
+  if (isDisconnecting.value) {
+    return
   }
-  chatDisconnect()
-  if (isViduSession.value) {
-    viduPlayerRef.value?.disconnect()
-  }
-  const returnPath = launchState.value?.return_path || '/characters'
-  if (sessionId.value) {
-    if (isViduSession.value) {
-      await requestViduSessionTeardown(false)
-    } else {
-      await deleteSession(sessionId.value).catch(() => {})
+  isDisconnecting.value = true
+  try {
+    const returnPath = resolveSessionReturnPath()
+    const sid = sessionId.value
+
+    visualInput.stop(undefined, true)
+    if (shouldUseMediaPeer.value) {
+      webrtcDisconnect()
     }
-    clearSessionLaunchState(sessionId.value)
+    chatDisconnect()
+    clearBaiduSessionActive()
+    if (isOfflineLiveSession.value) {
+      stopOfflineLiveSongPlayback()
+    }
+    if (isViduSession.value) {
+      viduPlayerRef.value?.disconnect()
+    }
+
+    if (sid) {
+      clearSessionLaunchState(sid)
+      if (isViduSession.value) {
+        void requestViduSessionTeardown(false)
+      } else {
+        void deleteSession(sid).catch(() => {})
+      }
+    }
+
+    await router.push(returnPath)
+  } finally {
+    isDisconnecting.value = false
   }
-  router.push(returnPath)
 }
 
 function handleLoadMore() {
@@ -1070,10 +1449,12 @@ function micDockBarHeight(level: number): string {
         :standby-src="idleVideoUrl"
         :standby-sources="idleVideoUrls"
         :standby-image-src="idleImageUrl"
+        :answer-src="isOfflineLiveSession ? offlineLiveOverlaySrc : ''"
+        :answer-loop="offlineLiveOverlayLoop"
         class="w-full flex-1 min-h-0"
         @standby-failed="onStandbyMp4Failed"
+        @answer-ended="onAnswerVideoEnded"
       />
-
       <div
         v-if="shouldShowVoiceAgentVisual"
         class="voice-agent-visual"
@@ -1084,12 +1465,6 @@ function micDockBarHeight(level: number): string {
           <img :src="voiceAgentVisualImage" alt="" />
         </div>
       </div>
-
-      <!-- Back button (top-left, glass) -->
-      <button @click="handleDisconnect"
-              class="absolute top-5 left-5 px-3 py-2 bg-black/70 backdrop-blur-sm rounded-cv-md text-sm text-cv-text hover:bg-black/90 transition-colors cursor-pointer z-10">
-        {{ t('session.back') }}
-      </button>
 
       <!-- FPS indicator (top-right, glass) — click to toggle diagnostics -->
       <button v-if="!isExternalAvatarSession && connectionState === 'connected'"
@@ -1115,16 +1490,32 @@ function micDockBarHeight(level: number): string {
       </button>
 
       <button
-        v-if="isChatCollapsed"
+        v-if="!isExternalAvatarSession"
         type="button"
-        class="chat-expand-button"
-        :title="t('session.expandChat')"
-        :aria-label="t('session.expandChat')"
+        class="chat-panel-edge-button"
+        :class="{ 'chat-panel-edge-button--expand': isChatCollapsed }"
+        :title="isChatCollapsed ? t('session.expandChat') : t('session.collapseChat')"
+        :aria-label="isChatCollapsed ? t('session.expandChat') : t('session.collapseChat')"
+        :aria-expanded="!isChatCollapsed"
         @click="toggleChatPanel"
       >
         <svg class="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
-          <path d="M10 3 5 8l5 5" stroke-linecap="round" stroke-linejoin="round" />
+          <path
+            v-if="isChatCollapsed"
+            d="M10 3 5 8l5 5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            v-else
+            d="M6 3l5 5-5 5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </svg>
+        <span class="chat-panel-edge-button-label">
+          {{ isChatCollapsed ? t('session.expandChat') : t('session.collapseChat') }}
+        </span>
       </button>
 
       <!-- Diagnostics panel -->
@@ -1258,7 +1649,7 @@ function micDockBarHeight(level: number): string {
       </div>
 
       <!-- Control bar (bottom center, floating) -->
-      <div class="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 px-6 py-2.5 bg-black/70 backdrop-blur-xl rounded-2xl border border-white/10 shadow-[0_4px_16px_rgba(0,0,0,0.3)] z-10 overflow-hidden">
+      <div class="session-control-dock absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 px-6 py-2.5 bg-black/70 backdrop-blur-xl rounded-2xl border border-white/10 shadow-[0_4px_16px_rgba(0,0,0,0.3)] z-30 overflow-hidden">
         <div v-if="hasAudioInputCapability && !isViduSession" class="dock-waveform-background" aria-hidden="true">
           <span
             v-for="(level, index) in micBarLevels"
@@ -1336,13 +1727,66 @@ function micDockBarHeight(level: number): string {
           <span class="text-[11px] text-cv-text-muted font-mono">{{ formatTime(elapsed) }}</span>
         </div>
 
-        <!-- Disconnect -->
-        <button @click="handleDisconnect"
-                class="relative z-10 w-10 h-10 rounded-full bg-cv-danger flex items-center justify-center text-white hover:bg-red-600 transition-colors cursor-pointer">
+        <!-- End live (only way to leave the session) -->
+        <button
+          type="button"
+          :disabled="isDisconnecting"
+          :title="t('session.closeLive')"
+          :aria-label="t('session.closeLive')"
+          class="relative z-10 w-10 h-10 rounded-full bg-cv-danger flex items-center justify-center text-white hover:bg-red-600 transition-colors cursor-pointer disabled:opacity-60"
+          @click.stop="handleDisconnect"
+        >
           <svg class="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M4 4l8 8M12 4l-8 8" stroke-linecap="round" />
           </svg>
         </button>
+      </div>
+
+      <div v-if="isOfflineLiveSession" class="offline-live-bottom-strip">
+        <section
+          v-if="showDanmakuFeed"
+          class="offline-live-danmaku-dock"
+        >
+          <div class="offline-live-danmaku-dock-head">{{ t('session.danmakuFeedTitle') }}</div>
+          <div ref="danmakuFeedScrollRef" class="offline-live-danmaku-dock-scroll">
+            <p v-if="displayDanmakuFeed.length === 0" class="danmaku-feed-empty">
+              {{
+                danmakuLinkState === 'connected'
+                  ? t('session.danmakuFeedEmpty')
+                  : t('session.danmakuFeedDockHint')
+              }}
+            </p>
+            <div
+              v-for="(item, index) in displayDanmakuFeed"
+              :key="`${item.timestamp}-${index}-${item.messageId || ''}`"
+              class="danmaku-feed-line"
+            >
+              <span class="danmaku-feed-user">{{ item.username }}</span>
+              <span class="danmaku-feed-text">{{ item.text }}</span>
+            </div>
+          </div>
+        </section>
+
+        <aside
+          v-if="showAnswerVideoProgress"
+          class="offline-live-turn-progress"
+          :class="{ 'offline-live-turn-progress--solo': !showDanmakuFeed }"
+          role="status"
+          :aria-label="t('session.offlineLiveAnswerVideoProgress')"
+        >
+          <div class="offline-live-turn-progress-head">
+            <span class="offline-live-turn-progress-title">{{ t('session.offlineLiveAnswerVideoProgress') }}</span>
+            <span class="offline-live-turn-progress-pct">{{ answerVideoProgressPercent }}%</span>
+          </div>
+          <div class="offline-live-turn-progress-track">
+            <div
+              class="offline-live-turn-progress-fill"
+              :class="{ 'offline-live-turn-progress-fill--indeterminate': answerVideoProgressPercent === 0 }"
+              :style="{ width: `${Math.max(answerVideoProgressPercent, answerVideoProgressPercent === 0 ? 35 : 0)}%` }"
+            />
+          </div>
+          <p class="offline-live-turn-progress-msg">{{ answerVideoProgressLabel }}</p>
+        </aside>
       </div>
     </div>
 
@@ -1363,41 +1807,113 @@ function micDockBarHeight(level: number): string {
         @pointerdown="handleChatSidebarPointerDown"
       />
       <div class="session-chat-inner">
-        <!-- Chat header -->
-        <div class="h-[52px] shrink-0 flex items-center justify-between px-5 border-b border-cv-border-subtle">
-          <div class="flex items-center gap-3 min-w-0">
-            <button
-              type="button"
-              class="chat-toggle-button"
-              :title="t('session.collapseChat')"
-              :aria-label="t('session.collapseChat')"
-              :aria-expanded="!isChatCollapsed"
-              @click="toggleChatPanel"
-            >
-              <svg class="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M6 3l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
+        <header
+          v-if="!isOfflineLiveSession"
+          class="h-[52px] shrink-0 flex items-center justify-between px-5 border-b border-cv-border-subtle"
+        >
+          <span class="text-base font-semibold text-cv-text truncate">{{ chatSidebarTitle }}</span>
+          <button
+            type="button"
+            class="text-[13px] text-cv-text-muted hover:text-cv-text transition-colors cursor-pointer"
+            @click="handleClearChatPanel"
+          >
+            {{ t('session.clear') }}
+          </button>
+        </header>
+
+        <div v-else class="offline-live-sidebar-top shrink-0">
+          <div class="offline-live-toolbar-head">
+            <span class="offline-live-toolbar-title">{{ chatSidebarTitle }}</span>
+            <template v-if="showDanmakuFeed">
+              <span class="offline-live-toolbar-divider" aria-hidden="true" />
+              <span class="offline-live-toolbar-kicker">{{ t('session.danmakuLinkShort') }}</span>
+              <button
+                type="button"
+                class="danmaku-connect-btn danmaku-connect-btn--primary danmaku-connect-btn--inline"
+                :disabled="danmakuConnectBusy || danmakuLinkState === 'connected'"
+                :title="t('session.danmakuConnectHint')"
+                @click="handleConnectDanmaku"
+              >
+                {{ danmakuConnectBusy && danmakuLinkState !== 'connected' ? t('session.danmakuStatusStarting') : t('session.danmakuConnectButtonShort') }}
+              </button>
+              <button
+                type="button"
+                class="danmaku-connect-btn danmaku-connect-btn--inline danmaku-connect-btn--stop"
+                :disabled="danmakuConnectBusy || danmakuLinkState !== 'connected'"
+                @click="handleDisconnectDanmaku"
+              >
+                {{ t('session.danmakuDisconnectButtonShort') }}
+              </button>
+              <span
+                class="danmaku-feed-status danmaku-feed-status--pill"
+                :class="{ 'danmaku-feed-status--live': danmakuLinkState === 'connected' }"
+                :title="danmakuRoomLabel || danmakuLinkStatusLabel"
+              >
+                {{ danmakuLinkStatusLabel }}
+              </span>
+            </template>
+            <span class="offline-live-toolbar-spacer" />
+            <button type="button" class="offline-live-toolbar-clear" @click="handleClearChatPanel">
+              {{ t('session.clear') }}
             </button>
-            <span class="text-base font-semibold text-cv-text truncate">{{ t('session.chatTitle') }}</span>
           </div>
-          <button class="text-[13px] text-cv-text-muted hover:text-cv-text transition-colors cursor-pointer">{{ t('session.clear') }}</button>
+
+          <div v-if="offlineLiveActions.length > 0" class="offline-live-toolbar-band">
+            <span class="offline-live-row-label">{{ t('session.offlineLiveActionsLabel') }}</span>
+            <div class="offline-live-chip-scroll">
+              <button
+                v-for="clip in offlineLiveActions"
+                :key="clip.id"
+                type="button"
+                class="offline-live-action-btn offline-live-action-btn--chip"
+                :class="{ 'offline-live-action-btn--active': activeOfflineLiveActionId === clip.id && !!offlineLiveActionUrl }"
+                @click="playOfflineLiveActionClip(clip)"
+              >
+                {{ clip.title }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="offlineLiveSongs.length > 0" class="offline-live-toolbar-band offline-live-toolbar-band--songs">
+            <span class="offline-live-row-label">{{ t('session.offlineLiveSongsLabel') }}</span>
+            <div class="offline-live-chip-scroll">
+              <button
+                v-for="clip in offlineLiveSongs"
+                :key="'song-' + clip.id"
+                type="button"
+                class="offline-live-action-btn offline-live-song-btn offline-live-action-btn--chip"
+                :class="{ 'offline-live-action-btn--active': activeOfflineLiveSongId === clip.id && isOfflineLiveSongPlaying }"
+                @click="playOfflineLiveSongClip(clip)"
+              >
+                {{ offlineLiveSongDisplayTitle(clip.title) }}
+              </button>
+              <button
+                v-if="isOfflineLiveSongPlaying"
+                type="button"
+                class="offline-live-action-btn offline-live-song-stop-btn offline-live-action-btn--chip"
+                @click="stopOfflineLiveSongPlayback"
+              >
+                {{ t('offlineVideo.offlineLiveStopSing') }}
+              </button>
+            </div>
+          </div>
         </div>
 
-        <!-- Messages (reuse ChatPanel) -->
-        <ChatPanel
-          :messages="messages"
-          :current-transcript="currentTranscript"
-          :current-l-l-m-response="currentLLMResponse"
-          :avatar-status="avatarStatus"
-          :history-loading="historyLoading"
-          :history-has-more="historyHasMore"
-          @send-text="sendText"
-          @load-more="handleLoadMore"
-          class="flex-1"
-        />
+        <div class="session-chat-main flex-1 min-h-0 flex flex-col overflow-hidden">
+          <ChatPanel
+            :messages="offlineLiveChatMessages"
+            :current-transcript="showDanmakuFeed ? '' : currentTranscript"
+            :current-l-l-m-response="currentLLMResponse"
+            :avatar-status="avatarStatus"
+            :history-loading="historyLoading"
+            :history-has-more="historyHasMore"
+            @send-text="sendText"
+            @load-more="handleLoadMore"
+            class="flex-1 min-h-0"
+          />
+        </div>
 
-        <!-- Footer hint -->
-        <div class="h-6 flex items-center justify-center shrink-0">
+        <div v-if="!isOfflineLiveSession" class="h-6 flex items-center justify-center shrink-0">
           <span class="text-[11px] text-cv-text-muted">{{ t('session.footerHint') }}</span>
         </div>
       </div>
@@ -1406,6 +1922,324 @@ function micDockBarHeight(level: number): string {
 </template>
 
 <style scoped>
+.offline-live-sidebar-top {
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-bottom: 1px solid var(--cv-border-subtle, rgba(255, 255, 255, 0.08));
+  background: #12151a;
+}
+
+.session-chat-main {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.offline-live-toolbar-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.offline-live-toolbar-title {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cv-text, #fbf6ef);
+}
+
+.offline-live-toolbar-kicker {
+  font-size: 11px;
+  color: var(--cv-text-muted, #8d96a6);
+}
+
+.offline-live-toolbar-divider {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.offline-live-toolbar-spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.offline-live-toolbar-clear {
+  font-size: 12px;
+  color: var(--cv-text-muted, #8d96a6);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+}
+
+.offline-live-toolbar-clear:hover {
+  color: var(--cv-text, #fbf6ef);
+}
+
+.offline-live-bottom-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: 128px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0c0e12;
+}
+
+.offline-live-danmaku-dock {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 128px;
+  display: flex;
+  flex-direction: column;
+  background: #0c0e12;
+}
+
+.offline-live-turn-progress {
+  flex: 0 0 min(280px, 38%);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.offline-live-turn-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.offline-live-turn-progress-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.offline-live-turn-progress-pct {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #7ec8ff;
+}
+
+.offline-live-turn-progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.offline-live-turn-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #3b82f6, #34e6f3);
+  transition: width 280ms ease;
+}
+
+.offline-live-turn-progress-msg {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--cv-text-muted, #8d96a6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.offline-live-turn-progress--solo {
+  flex: 1 1 auto;
+  border-left: none;
+  max-width: none;
+}
+
+.offline-live-danmaku-dock-head {
+  flex-shrink: 0;
+  padding: 8px 12px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.offline-live-danmaku-dock-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 12px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.offline-live-toolbar-band {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.offline-live-toolbar-band--songs {
+  padding-bottom: 14px;
+}
+
+.offline-live-row-label {
+  display: block;
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cv-text-muted, #8d96a6);
+}
+
+.offline-live-chip-scroll {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-height: 72px;
+  align-items: center;
+  align-content: flex-start;
+  scrollbar-width: thin;
+}
+
+.danmaku-feed-title {
+  font-weight: 600;
+}
+
+.danmaku-connect-btn {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  cursor: pointer;
+}
+
+.danmaku-connect-btn--primary {
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.95), rgba(37, 99, 235, 0.95));
+  border-color: rgba(147, 197, 253, 0.45);
+  color: #fff;
+}
+
+.danmaku-connect-btn--inline {
+  flex-shrink: 0;
+  width: auto;
+  margin-top: 0;
+  padding: 3px 8px;
+  font-size: 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.danmaku-connect-btn--stop {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #e8edf3;
+}
+
+.danmaku-connect-btn--inline:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.offline-live-turn-progress-fill--indeterminate {
+  animation: offline-live-progress-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes offline-live-progress-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.danmaku-feed-status--pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.danmaku-feed-status--live {
+  color: #86efac;
+  border-color: rgba(134, 239, 172, 0.35);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.offline-live-action-btn--chip {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 6px;
+}
+
+.danmaku-connect-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.danmaku-feed-room {
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.65;
+  word-break: break-all;
+}
+
+.danmaku-feed-status {
+  font-weight: 400;
+  color: var(--cv-text-muted, #8d96a6);
+}
+
+.danmaku-feed-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 16px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.danmaku-feed-empty {
+  margin: 0;
+  color: var(--cv-text-muted, #8d96a6);
+}
+
+.danmaku-feed-line {
+  margin-bottom: 4px;
+}
+
+.danmaku-feed-user {
+  margin-right: 6px;
+  color: #7ec8ff;
+  font-weight: 500;
+}
+
+.danmaku-feed-text {
+  color: var(--cv-text, #fbf6ef);
+  word-break: break-word;
+}
+
 .session-page {
   position: relative;
   display: flex;
@@ -1428,6 +2262,46 @@ function micDockBarHeight(level: number): string {
   display: flex;
   flex-direction: column;
   background: #000;
+}
+
+.session-control-dock {
+  pointer-events: auto;
+}
+
+.offline-live-action-bar--chat {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: #171a20;
+}
+
+.offline-live-action-btn {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 6px 12px;
+  color: #e8edf3;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.offline-live-action-btn:hover:not(:disabled) {
+  border-color: rgba(52, 230, 243, 0.45);
+  background: rgba(52, 230, 243, 0.08);
+}
+
+.offline-live-action-btn--active {
+  border-color: rgba(52, 230, 243, 0.65);
+  background: rgba(52, 230, 243, 0.16);
+  color: #8fe8ef;
+}
+
+.offline-live-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .voice-agent-visual {
@@ -1526,6 +2400,9 @@ function micDockBarHeight(level: number): string {
 }
 
 .session-chat-inner {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
   width: 100%;
   min-width: 0;
   height: 100%;
@@ -1611,19 +2488,39 @@ function micDockBarHeight(level: number): string {
   background: var(--color-cv-hover);
 }
 
-.chat-expand-button {
+.chat-panel-edge-button {
   position: absolute;
-  top: 64px;
-  right: 20px;
-  z-index: 10;
+  left: 20px;
+  bottom: 20px;
+  z-index: 25;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(240px, calc(100% - 40px));
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
   color: var(--color-cv-text);
-  background: rgba(0, 0, 0, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.78);
   backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: background-color 160ms ease;
 }
 
-.chat-expand-button:hover {
-  background: rgba(0, 0, 0, 0.9);
+.chat-panel-edge-button:hover {
+  background: rgba(0, 0, 0, 0.92);
+}
+
+.chat-panel-edge-button-label {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-collapsed .chat-panel-edge-button {
+  right: 20px;
 }
 
 .baidu-avatar-status {

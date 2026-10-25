@@ -1,0 +1,12 @@
+{
+  "live": {
+    "platform": "bilibili",
+    "douyin_room": "",
+    "douyin_relay": "http://127.0.0.1:8757"
+  },
+  "bilibili": {
+    "mode": "web",
+    "room_id": 0,
+    "app_id": 0
+  }
+}

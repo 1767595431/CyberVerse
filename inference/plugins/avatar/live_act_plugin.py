@@ -876,6 +876,24 @@ class LiveActAvatarPlugin(AvatarPlugin):
                     logger.warning("LiveAct avatar not initialized, skipping")
                     return
 
+                import os as _os
+                _pf = "/root/autodl-tmp/dynamic_prompt.txt"
+                try:
+                    if _os.path.exists(_pf):
+                        _np = open(_pf, "r", encoding="utf-8").read().strip()
+                        if _np and _np != getattr(self, "_dynamic_prompt_cache", None):
+                            self._dynamic_prompt_cache = _np
+                            self._default_prompt = _np
+                            t5_dev2 = "cpu" if self._t5_cpu else self._device
+                            with torch.no_grad():
+                                self._context = [
+                                    self._text_encoder(texts=self._default_prompt, device=t5_dev2)[0]
+                                    .to(self._device, dtype=torch.bfloat16)
+                                ]
+                            logger.info(f"[DynamicPrompt] action prompt updated: {_np}")
+                except Exception as _e:
+                    logger.warning(f"[DynamicPrompt] failed: {_e}")
+
                 # Decode incoming audio to 16kHz float32
                 tgt_sr = 16000
                 src_sr = int(audio_chunk.sample_rate or tgt_sr)

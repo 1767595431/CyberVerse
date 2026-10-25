@@ -22,6 +22,7 @@ import (
 
 	"github.com/cyberverse/server/internal/character"
 	"github.com/cyberverse/server/internal/inference"
+	"github.com/cyberverse/server/internal/media"
 	"github.com/cyberverse/server/internal/orchestrator"
 )
 
@@ -62,14 +63,15 @@ type offlineVideoJobResponse struct {
 }
 
 type offlineVideoRunInput struct {
-	JobID       string
-	CharacterID string
-	ImageData   []byte
-	ImageFormat string
-	Text        string
-	Audio       *orchestrator.OfflineAudioInput
-	TTSConfig   inference.TTSConfig
-	OutputPath  string
+	JobID             string
+	CharacterID       string
+	ImageData         []byte
+	ImageFormat       string
+	Text              string
+	Audio             *orchestrator.OfflineAudioInput
+	TTSConfig         inference.TTSConfig
+	OutputPath        string
+	BackingAudioPath  string
 }
 
 type updateOfflineVideoRequest struct {
@@ -150,12 +152,16 @@ func (r *Router) handleCreateOfflineVideo(w http.ResponseWriter, req *http.Reque
 			inputType = "audio"
 		}
 	}
-	if inputType != "text" && inputType != "audio" {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "input_type must be text or audio"})
+	if inputType != "text" && inputType != "audio" && inputType != "sing" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "input_type must be text, audio, or sing"})
 		return
 	}
 	if inputType == "text" && text == "" {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "text input is required"})
+		return
+	}
+	if inputType == "sing" && ch.AvatarBackend != character.AvatarBackendLocalImage {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "singing drive is only supported for local avatar characters"})
 		return
 	}
 	if ch.AvatarBackend == character.AvatarBackendVidu {
@@ -195,8 +201,16 @@ func (r *Router) handleCreateOfflineVideo(w http.ResponseWriter, req *http.Reque
 	}
 
 	var audio *orchestrator.OfflineAudioInput
+	var backingAudioPath string
 	if inputType == "audio" {
 		audio, err = readOfflineVideoAudio(req, jobDir)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+			return
+		}
+	}
+	if inputType == "sing" {
+		audio, backingAudioPath, err = readOfflineVideoSingAudio(req.Context(), req, jobDir)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 			return
@@ -205,7 +219,15 @@ func (r *Router) handleCreateOfflineVideo(w http.ResponseWriter, req *http.Reque
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	title := strings.TrimSpace(req.FormValue("title"))
-	if title == "" {
+	if inputType == "sing" {
+		if title == "" {
+			title = media.BuildOfflineLiveSingVideoTitle(req.FormValue("song_name"))
+		}
+		if title == "" {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "song name is required for singing drive"})
+			return
+		}
+	} else if title == "" {
 		title = defaultOfflineVideoTitle()
 	}
 	job := &offlineVideoJob{
@@ -227,15 +249,25 @@ func (r *Router) handleCreateOfflineVideo(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
+	// LiveAct reads /root/autodl-tmp/dynamic_prompt.txt on each generation chunk (no inference restart).
+	ap := strings.TrimSpace(req.FormValue("actionPrompt"))
+	if ap == "" && inputType == "sing" {
+		ap = media.DefaultSingActionPrompt
+	}
+	if ap != "" {
+		_ = os.WriteFile("/root/autodl-tmp/dynamic_prompt.txt", []byte(ap), 0644)
+	}
+
 	runInput := offlineVideoRunInput{
-		JobID:       jobID,
-		CharacterID: characterID,
-		ImageData:   imageData,
-		ImageFormat: imageFormat,
-		Text:        text,
-		Audio:       audio,
-		TTSConfig:   ttsConfig,
-		OutputPath:  filepath.Join(jobDir, "output.mp4"),
+		JobID:            jobID,
+		CharacterID:      characterID,
+		ImageData:        imageData,
+		ImageFormat:      imageFormat,
+		Text:             text,
+		Audio:            audio,
+		TTSConfig:        ttsConfig,
+		OutputPath:       filepath.Join(jobDir, "output.mp4"),
+		BackingAudioPath: backingAudioPath,
 	}
 	go r.runOfflineVideoJob(runInput)
 
@@ -455,12 +487,26 @@ func (r *Router) runOfflineVideoJob(in offlineVideoRunInput) {
 		})
 		return
 	}
+	videoPath := result.VideoPath
+	if strings.TrimSpace(in.BackingAudioPath) != "" {
+		update("mixing", 95, "Mixing accompaniment into final video")
+		if mixErr := media.MixVideoWithBacking(ctx, videoPath, in.BackingAudioPath, videoPath); mixErr != nil {
+			_ = r.updateOfflineVideoJob(in.CharacterID, in.JobID, func(job *offlineVideoJob) {
+				job.Status = "failed"
+				job.Stage = "failed"
+				job.Message = "Failed to mix accompaniment"
+				job.Error = mixErr.Error()
+				job.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+			})
+			return
+		}
+	}
 	_ = r.updateOfflineVideoJob(in.CharacterID, in.JobID, func(job *offlineVideoJob) {
 		job.Status = "completed"
 		job.Stage = "completed"
 		job.Message = "Offline video is ready"
 		job.Progress = 100
-		job.VideoFilename = filepath.Base(result.VideoPath)
+		job.VideoFilename = filepath.Base(videoPath)
 		job.Width = result.Width
 		job.Height = result.Height
 		job.FPS = result.FPS
@@ -660,6 +706,10 @@ func baiduXilingOfflineResolution(ch *character.Character) (int, int) {
 func baiduXilingOfflineVideoOptionsFromRequest(req *http.Request, ch *character.Character) baiduXilingOfflineVideoOptions {
 	defaultWidth, defaultHeight := baiduXilingOfflineResolution(ch)
 	width := parsePositiveInt(strings.TrimSpace(req.FormValue("width")), defaultWidth, 3840)
+	// 动作提示词：写入动态文件供 LiveAct 读取
+	if ap := strings.TrimSpace(req.FormValue("actionPrompt")); ap != "" {
+		os.WriteFile("/root/autodl-tmp/dynamic_prompt.txt", []byte(ap), 0644)
+	}
 	height := parsePositiveInt(strings.TrimSpace(req.FormValue("height")), defaultHeight, 3840)
 	transparentDefault := parseOfflineVideoBool(os.Getenv("BAIDU_XILING_OFFLINE_TRANSPARENT"), false)
 	options := baiduXilingOfflineVideoOptions{
@@ -884,6 +934,68 @@ func downloadOfflineVideo(ctx context.Context, remoteURL, outputPath string) err
 		return errors.New("downloaded video exceeds 2GB")
 	}
 	return os.Rename(tmpPath, outputPath)
+}
+
+var offlineSingMediaExtensions = map[string]struct{}{
+	".mp3": {}, ".wav": {}, ".flac": {}, ".m4a": {}, ".aac": {}, ".ogg": {}, ".opus": {}, ".wma": {},
+}
+
+func readOfflineVideoSingAudio(ctx context.Context, req *http.Request, jobDir string) (*orchestrator.OfflineAudioInput, string, error) {
+	file, header, err := req.FormFile("audio")
+	if err != nil {
+		return nil, "", errors.New("song audio file is required for singing drive")
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) == 0 {
+		return nil, "", errors.New("audio file is empty")
+	}
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext == "" {
+		ext = ".mp3"
+	}
+	if !isOfflineSingMediaExtension(ext) {
+		return nil, "", errors.New("unsupported song format; use mp3, wav, flac, m4a, aac, ogg, opus, or wma")
+	}
+	inputPath := filepath.Join(jobDir, "input"+ext)
+	if err := os.WriteFile(inputPath, data, 0644); err != nil {
+		return nil, "", err
+	}
+
+	wavForSeparate := inputPath
+	if ext != ".wav" {
+		wavForSeparate = filepath.Join(jobDir, "input_stereo.wav")
+		if err := media.ConvertMediaToWAV(ctx, inputPath, wavForSeparate); err != nil {
+			return nil, "", err
+		}
+	} else if !media.IsWAV(data) {
+		wavForSeparate = filepath.Join(jobDir, "input_stereo.wav")
+		if err := media.ConvertMediaToWAV(ctx, inputPath, wavForSeparate); err != nil {
+			return nil, "", err
+		}
+	}
+
+	vocalsWav, backingWav, err := media.SeparateVocalsForSing(ctx, wavForSeparate, jobDir)
+	if err != nil {
+		return nil, "", err
+	}
+	pcm, sampleRate, err := media.PCM16MonoFromWAV(vocalsWav, 16000)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(pcm) == 0 {
+		return nil, "", errors.New("vocal track is empty after separation")
+	}
+	return &orchestrator.OfflineAudioInput{PCM16: pcm, SampleRate: sampleRate}, backingWav, nil
+}
+
+func isOfflineSingMediaExtension(ext string) bool {
+	_, ok := offlineSingMediaExtensions[ext]
+	return ok
 }
 
 func readOfflineVideoAudio(req *http.Request, jobDir string) (*orchestrator.OfflineAudioInput, error) {

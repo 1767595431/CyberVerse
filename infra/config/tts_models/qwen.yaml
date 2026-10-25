@@ -5,6 +5,8 @@ qwen:
     # models. Set DASHSCOPE_COSYVOICE_WS_URL only to override the
     # default CosyVoice inference WebSocket endpoint.
     model: "qwen3-tts-flash-realtime"
+    # CosyVoice duplex WS model id when session uses qwen3-tts-* product names.
+    cosyvoice_model: "cosyvoice-v3-flash"
     voice: "Momo"
     sample_rate: 24000
     target_sample_rate: 16000 # Resampled rate sent to avatar models.

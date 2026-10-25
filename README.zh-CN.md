@@ -2,8 +2,10 @@
 <p align="center"><em>CyberVerse 是一个开源的<strong>实时数字人 Agent 框架</strong>。它基于 WebRTC、人设记忆、工具、RAG 和可选的数字人视频能力，帮助你构建以语音交互为核心的 AI Agent。</em></p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md"><strong>简体中文</strong></a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+  <a href="README.md"><strong>安装 / 运行 / 云上调试</strong></a> · <a href="README.zh-CN.md">产品介绍（本文）</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
 </p>
+
+> **团队部署与运维**（安装、端口、模型下载、AutoDL 连接排查）请以 **[README.md](./README.md)** 为准。
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL%20v3-blue.svg" alt="License: GPL v3"/></a>

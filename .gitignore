@@ -1,9 +1,65 @@
+# OS / editor
 .DS_Store
+.idea/
+*.swp
+*.swo
+*~
 .vscode/*
 !.vscode/launch.json
+
+# Python
 __pycache__/
+*.py[cod]
 .pytest_cache/
+htmlcov/
+.coverage
+*.egg-info/
+.venv/
+venv/
+dist/
+*.egg
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+.npm/
+
+# Go build outputs
+bin/
+server/cyberverse-server
+*.exe
+*.test
+
+# Secrets and local env (never commit)
+.env
+.env.*
+!.env.example
+cyberverse_config.yaml
+
+# Local runtime config (copy from infra/config)
+/config/
+/avatar_models/
+*.local.md
+*.local.yaml
+*.local.yml
+
+# Agent / IDE local state
+.agents/
+.cursor/
+.claude/
+.superpowers/
+.codegraph/
+skills-lock.json
+
+# Logs and process metadata
 logs/
+.run/
+*.log
+nohup.out
+*.pid
+
+# Runtime artifacts
 artifacts/
 assets/
 !docs/assets/
@@ -12,44 +68,39 @@ examples/
 sample_results/
 gradio_results/
 gradio_results_multigpu/
+tmp/
+temp/
+
+# Model weights and large binaries
 checkpoints/
 *.ckpt
 *.safetensors
 *.bin
+*.pt
+*.pth
 tools/
-*.egg-info/
-dist/
-bin/
-node_modules/
-frontend/dist/
-.env
-.env.local
-.venv/
-.agents/
-.cursor/
-.claude/
-server/cyberverse-server
 
-# Generated proto code
+# Generated code
 inference/generated/*_pb2*.py
 
-# Local configuration files
-cyberverse_config.yaml
-/config/
-/avatar_models/
-*.local.md
-
-
+# Session / user data on disk
 server/recordings/
 data/
-.superpowers/
 
-# LiveAct outputs
+# Video and media outputs (regenerate locally)
 *.mp4
+*.mov
+*.webm
 tmp_*.mp4
+!docs/**/*.mp4
+
+# LiveAct / MuseTalk runtime outputs
 models/SoulX-LiveAct/hls_output/
 models/SoulX-LiveAct/uploads/
 
-skills-lock.json
-.codegraph/
-tmp/
+# Douyin DyHub relay (built binary + local runtime)
+runtime/dyhub/
+runtime/dyhub.log
+
+# Optional: keep live-danmaku reference code tracked; ignore only local relay build
+# live-danmaku/ is tracked — do not add here unless you vendor DyHub into repo root

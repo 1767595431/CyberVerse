@@ -236,6 +236,8 @@ func main() {
 		<-sigCh
 		log.Println("Shutting down server...")
 
+		router.StopDanmakuWorkers()
+
 		// Teardown all orchestrator sessions
 		orch.TeardownAll()
 

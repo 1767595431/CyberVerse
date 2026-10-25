@@ -1,0 +1,3 @@
+# Offline-live danmaku worker (see live-danmaku/README.md)
+aiohttp~=3.9
+# blivedm: install from upstream Git per live-danmaku/README.md (not PyPI)

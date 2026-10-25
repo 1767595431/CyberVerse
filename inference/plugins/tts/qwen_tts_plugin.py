@@ -29,6 +29,7 @@ class QwenTTSPlugin(TTSPlugin):
         self.model = "qwen3-tts-flash-realtime"
         self.ws_url = ""
         self.cosyvoice_ws_url = ""
+        self.cosyvoice_model = "cosyvoice-v3-flash"
         self.voice = "Momo"
         self.sample_rate = 24000
         self.target_sample_rate = 16000
@@ -42,6 +43,9 @@ class QwenTTSPlugin(TTSPlugin):
             "cosyvoice_ws_url",
             "",
         ) or dashscope_cosyvoice_ws_url()
+        self.cosyvoice_model = str(
+            config.params.get("cosyvoice_model", self.cosyvoice_model)
+        ).strip()
         self.voice = config.params.get("voice", self.voice)
         self.sample_rate = int(config.params.get("sample_rate", self.sample_rate))
         self.target_sample_rate = int(
@@ -131,7 +135,8 @@ class QwenTTSPlugin(TTSPlugin):
 
         ws = await self._connect(websockets, self.cosyvoice_ws_url)
         try:
-            await self._send_cosyvoice_run_task(ws, task_id, model, voice)
+            cosy_model = self._cosyvoice_inference_model(model)
+            await self._send_cosyvoice_run_task(ws, task_id, cosy_model, voice)
             await self._wait_for_cosyvoice_task_started(ws)
 
             async def send_text() -> None:
@@ -293,6 +298,7 @@ class QwenTTSPlugin(TTSPlugin):
         ws: Any,
         rechunker: AudioRechunker,
     ) -> AsyncIterator[AudioChunk]:
+        seen_audio = False
         while True:
             event = json.loads(await ws.recv())
             event_type = event.get("type", "")
@@ -301,6 +307,7 @@ class QwenTTSPlugin(TTSPlugin):
                 delta = event.get("delta", "")
                 if not delta:
                     continue
+                seen_audio = True
                 try:
                     pcm = base64.b64decode(delta)
                     audio = (
@@ -319,7 +326,15 @@ class QwenTTSPlugin(TTSPlugin):
                     logger.exception("Failed to decode Qwen TTS audio delta")
                 continue
 
-            if event_type in {"response.done", "response.audio.done", "output.done"}:
+            if event_type == "response.audio.done":
+                return
+
+            if event_type == "response.done":
+                if seen_audio:
+                    return
+                raise RuntimeError("Qwen TTS response ended without audio")
+
+            if event_type == "output.done":
                 return
 
             if event_type == "error":
@@ -376,9 +391,27 @@ class QwenTTSPlugin(TTSPlugin):
             return self.ws_url
         return dashscope_realtime_ws_url(model, "DASHSCOPE_TTS_WS_URL")
 
+    def _cosyvoice_inference_model(self, model: str) -> str:
+        """Map product TTS model ids to CosyVoice WS model ids."""
+        m = model.strip().lower()
+        if m.startswith("cosyvoice-"):
+            return model.strip()
+        if self._uses_cosyvoice_protocol(model):
+            return self.cosyvoice_model or "cosyvoice-v3-flash"
+        return model.strip()
+
     @staticmethod
     def _uses_cosyvoice_protocol(model: str) -> bool:
-        return model.strip().lower().startswith("cosyvoice-")
+        m = model.strip().lower()
+        if m.startswith("cosyvoice-"):
+            return True
+        # qwen3-tts-* / qwen-tts-* use the Qwen-TTS Realtime WebSocket (Serena, Momo, etc.).
+        if m.startswith("qwen3-tts-") or m.startswith("qwen-tts-"):
+            return False
+        # Non-TTS Qwen realtime models (e.g. omni) are not valid on the TTS Realtime API.
+        if m.startswith("qwen") and "realtime" in m:
+            return True
+        return False
 
     @staticmethod
     def _resample(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:

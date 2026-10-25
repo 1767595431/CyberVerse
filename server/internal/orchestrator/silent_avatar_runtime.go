@@ -660,7 +660,7 @@ func (o *Orchestrator) hasOtherSilentAvatarRuntime(sessionID string) bool {
 }
 
 func (o *Orchestrator) startSilentAvatarRuntime(ctx context.Context, session *Session) {
-	if !o.useSilentInference() || session == nil || o.inference == nil {
+	if !o.useSilentInference() || session == nil || o.inference == nil || session.IsOfflineLive() {
 		return
 	}
 	maxLead := silentAvatarDefaultMaxLead

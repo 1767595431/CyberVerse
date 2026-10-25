@@ -27,6 +27,10 @@ import {
   isQwenTTSVoiceType,
   localizedVoiceOptions,
 } from '../utils/voice'
+import { OFFLINE_LIVE_NAMED_ACTION_PROMPTS } from '../constants/offlineLiveActionPrompts'
+import { OFFLINE_LIVE_IDLE_PROMPTS } from '../constants/offlineLiveIdlePrompts'
+import { buildOfflineLiveSingVideoTitle, suggestSingSongNameFromFileName } from '../utils/offlineLiveVideoTitle'
+import { pruneOfflineLiveLaunchJob } from '../utils/offlineLiveLaunchPreference'
 
 const route = useRoute()
 const router = useRouter()
@@ -37,10 +41,116 @@ const characterId = computed(() => route.params.id as string)
 const pageTitle = computed(() => t('launch.workspaceTitle'))
 const hasCurrentCharacter = computed(() => store.current?.id === characterId.value)
 const showLoading = computed(() => loading.value && !hasCurrentCharacter.value)
-const inputType = ref<'text' | 'audio'>('text')
+const inputType = ref<'text' | 'audio' | 'sing'>('text')
+const actionPrompt = ref('')
+const offlineLiveNamedActions = OFFLINE_LIVE_NAMED_ACTION_PROMPTS
+
+const idleActionPromptRefs = OFFLINE_LIVE_IDLE_PROMPTS
+
+type PromptPresetCategory = 'idle' | 'action'
+
+type SelectedPromptPreset = {
+  category: PromptPresetCategory
+  labelKey: string
+  promptKey: string
+  scriptKey?: string
+}
+
+const selectedPromptPreset = ref<SelectedPromptPreset | null>(null)
+
+const idlePromptSelectionLocked = computed(() => selectedPromptPreset.value?.category === 'action')
+const actionPromptSelectionLocked = computed(() => selectedPromptPreset.value?.category === 'idle')
+
+function isIdlePresetSelected(item: { promptKey: string }): boolean {
+  const preset = selectedPromptPreset.value
+  return preset?.category === 'idle' && preset.promptKey === item.promptKey
+}
+
+function isActionPresetSelected(item: { promptKey: string }): boolean {
+  const preset = selectedPromptPreset.value
+  return preset?.category === 'action' && preset.promptKey === item.promptKey
+}
+
+function selectIdlePreset(item: { labelKey: string; promptKey: string }) {
+  if (idlePromptSelectionLocked.value) return
+  if (isIdlePresetSelected(item)) {
+    selectedPromptPreset.value = null
+    actionPrompt.value = ''
+    return
+  }
+  selectedPromptPreset.value = {
+    category: 'idle',
+    labelKey: item.labelKey,
+    promptKey: item.promptKey,
+  }
+  actionPrompt.value = t(item.promptKey)
+}
+
+function selectActionPreset(item: {
+  labelKey: string
+  promptKey: string
+  scriptKey?: string
+}) {
+  if (actionPromptSelectionLocked.value) return
+  if (isActionPresetSelected(item)) {
+    selectedPromptPreset.value = null
+    actionPrompt.value = ''
+    return
+  }
+  selectedPromptPreset.value = {
+    category: 'action',
+    labelKey: item.labelKey,
+    promptKey: item.promptKey,
+    scriptKey: item.scriptKey,
+  }
+  actionPrompt.value = t(item.promptKey)
+  if (inputType.value === 'text' && item.scriptKey) {
+    scriptText.value = t(item.scriptKey)
+  }
+}
+
+function buildAutoVideoTitleFromPreset(): string | undefined {
+  const preset = selectedPromptPreset.value
+  if (!preset) return undefined
+  const prefix = preset.category === 'idle' ? '待机-' : '动作-'
+  return `${prefix}${t(preset.labelKey)}`
+}
+
+function buildAutoVideoTitleForSubmit(): string | undefined {
+  if (inputType.value === 'sing') {
+    return buildOfflineLiveSingVideoTitle(singSongName.value) || undefined
+  }
+  return buildAutoVideoTitleFromPreset()
+}
+
+watch(actionPrompt, (value) => {
+  const preset = selectedPromptPreset.value
+  if (!preset) return
+  if (value.trim() !== t(preset.promptKey).trim()) {
+    selectedPromptPreset.value = null
+  }
+})
 const scriptText = ref(t('offlineVideo.defaultScript'))
+
+watch(inputType, (mode) => {
+  if (mode === 'text') {
+    const preset = selectedPromptPreset.value
+    if (preset?.category === 'action' && preset.scriptKey) {
+      scriptText.value = t(preset.scriptKey)
+    }
+    return
+  }
+  if (mode === 'sing' && showSingDrive.value) {
+    selectedPromptPreset.value = null
+    if (!actionPrompt.value.trim()) {
+      actionPrompt.value = t('offlineVideo.defaultSingActionPrompt')
+    }
+  }
+})
 const audioFile = ref<File | null>(null)
 const audioFileError = ref('')
+const singSongName = ref('')
+const singSongNameError = ref('')
 const inputAudioUrl = ref('')
 const outputWidth = ref(1080)
 const outputHeight = ref(1920)
@@ -88,7 +198,7 @@ const DEFAULT_COMPONENTS: ComponentsResponse = {
 const componentCatalog = ref<ComponentsResponse>({ ...DEFAULT_COMPONENTS })
 
 interface OfflineVideoSettings {
-  inputType?: 'text' | 'audio'
+  inputType?: 'text' | 'audio' | 'sing'
   outputWidth?: number
   outputHeight?: number
   transparentBackground?: boolean
@@ -100,6 +210,7 @@ interface OfflineVideoSettings {
   inputAudioUrl?: string
   backgroundImageUrl?: string
   autoAnimoji?: boolean
+  singSongName?: string
 }
 
 const ttsLanguageOptions = [
@@ -136,6 +247,12 @@ const providerSelectOptions = (items: ComponentOption[]) =>
   }))
 
 const isBaiduXilingCharacter = computed(() => store.current?.avatar_backend === 'baidu_xiling')
+const isXunfeiCharacter = computed(() => store.current?.avatar_backend === 'xunfei')
+const isViduCharacter = computed(() => store.current?.avatar_backend === 'vidu')
+const isExternalAvatarCharacter = computed(() =>
+  isBaiduXilingCharacter.value || isXunfeiCharacter.value || isViduCharacter.value,
+)
+const showSingDrive = computed(() => !isExternalAvatarCharacter.value)
 const showLocalTextTTSSettings = computed(() => !isBaiduXilingCharacter.value && inputType.value === 'text')
 const localVideoOutputRows = computed(() => {
   const wanted = new Set(['size', 'fps'])
@@ -181,6 +298,12 @@ const selectedAudioFileMeta = computed(() => {
   const fileType = file.type || t('offlineVideo.audioFileRawFormat')
   return `${formatFileSize(file.size)} · ${fileType}`
 })
+const selectedSingFileMeta = computed(() => {
+  const file = audioFile.value
+  if (!file) return t('offlineVideo.singFileEmptyHint')
+  const fileType = file.type || fileExtension(file.name).toUpperCase()
+  return `${formatFileSize(file.size)} · ${fileType}`
+})
 const ttsProviderOptions = computed(() => providerSelectOptions(componentCatalog.value.tts))
 const selectedOfflineTTSComponent = computed(() =>
   componentCatalog.value.tts.find(item => item.id === offlineTTSProvider.value),
@@ -218,7 +341,9 @@ const offlineCosyVoiceOfficialOptions = computed(() => localizedVoiceOptions(
   locale.value,
 ))
 const supportedAudioExtensions = new Set(['wav', 'pcm', 's16le'])
+const supportedSingExtensions = new Set(['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg', 'opus', 'wma'])
 const audioAccept = '.wav,.pcm,.s16le,audio/wav,audio/wave,audio/x-wav'
+const singAccept = '.mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.wma,audio/mpeg,audio/mp4,audio/flac'
 const isTTSPersonRequired = computed(() => isBaiduXilingCharacter.value && inputType.value === 'text')
 const isMissingTTSPerson = computed(() => isTTSPersonRequired.value && !ttsPerson.value.trim())
 const canGenerate = computed(() => {
@@ -231,6 +356,9 @@ const canGenerate = computed(() => {
   }
   if (isBaiduXilingCharacter.value) {
     return inputAudioUrl.value.trim().length > 0
+  }
+  if (inputType.value === 'sing') {
+    return isSupportedOfflineSingFile(audioFile.value) && singSongName.value.trim().length > 0
   }
   return !!audioFile.value
 })
@@ -264,9 +392,15 @@ function saveOfflineVideoSettings() {
     inputAudioUrl: inputAudioUrl.value,
     backgroundImageUrl: backgroundImageUrl.value,
     autoAnimoji: autoAnimoji.value,
+    singSongName: singSongName.value,
   }
   window.localStorage.setItem(offlineVideoSettingsKey(), JSON.stringify(settings))
 }
+
+const singVideoTitlePreview = computed(() => {
+  if (inputType.value !== 'sing') return ''
+  return buildOfflineLiveSingVideoTitle(singSongName.value)
+})
 
 function numberSetting(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -516,12 +650,20 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function fileExtension(name: string): string {
+  const normalizedName = name.trim().toLowerCase()
+  const dotIndex = normalizedName.lastIndexOf('.')
+  return dotIndex >= 0 ? normalizedName.slice(dotIndex + 1) : ''
+}
+
 function isSupportedOfflineAudioFile(file: File | null): boolean {
   if (!file) return false
-  const normalizedName = file.name.trim().toLowerCase()
-  const dotIndex = normalizedName.lastIndexOf('.')
-  const extension = dotIndex >= 0 ? normalizedName.slice(dotIndex + 1) : ''
-  return supportedAudioExtensions.has(extension)
+  return supportedAudioExtensions.has(fileExtension(file.name))
+}
+
+function isSupportedOfflineSingFile(file: File | null): boolean {
+  if (!file) return false
+  return supportedSingExtensions.has(fileExtension(file.name))
 }
 
 function handleAudioChange(event: Event) {
@@ -533,20 +675,35 @@ function handleAudioChange(event: Event) {
     audioFileError.value = ''
     return
   }
-  if (!isSupportedOfflineAudioFile(file)) {
+  const supported = inputType.value === 'sing'
+    ? isSupportedOfflineSingFile(file)
+    : isSupportedOfflineAudioFile(file)
+  if (!supported) {
     audioFile.value = null
-    audioFileError.value = t('offlineVideo.audioFileUnsupported')
+    audioFileError.value = inputType.value === 'sing'
+      ? t('offlineVideo.singFileUnsupported')
+      : t('offlineVideo.audioFileUnsupported')
     input.value = ''
     return
   }
   audioFile.value = file
   audioFileError.value = ''
+  if (inputType.value === 'sing' && !singSongName.value.trim()) {
+    singSongName.value = suggestSingSongNameFromFileName(file.name)
+  }
+  singSongNameError.value = ''
 }
 
 function loadOutputSettings() {
   const config = store.current?.baidu_xiling
   const settings = readOfflineVideoSettings()
-  inputType.value = settings.inputType === 'audio' ? 'audio' : 'text'
+  if (settings.inputType === 'audio') {
+    inputType.value = 'audio'
+  } else if (settings.inputType === 'sing' && showSingDrive.value) {
+    inputType.value = 'sing'
+  } else {
+    inputType.value = 'text'
+  }
   outputWidth.value = config?.width || 1080
   outputHeight.value = config?.height || 1920
   outputWidth.value = numberSetting(settings.outputWidth, outputWidth.value)
@@ -561,6 +718,7 @@ function loadOutputSettings() {
   inputAudioUrl.value = stringSetting(settings.inputAudioUrl, '')
   backgroundImageUrl.value = stringSetting(settings.backgroundImageUrl, '')
   autoAnimoji.value = boolSetting(settings.autoAnimoji, false)
+  singSongName.value = stringSetting(settings.singSongName, '')
 }
 
 async function loadLocalVideoOutputSettings() {
@@ -589,6 +747,7 @@ watch(
     inputAudioUrl,
     backgroundImageUrl,
     autoAnimoji,
+    singSongName,
   ],
   saveOfflineVideoSettings,
 )
@@ -633,7 +792,17 @@ async function submitJob() {
     audioFileError.value = t('offlineVideo.audioFileUnsupported')
     return
   }
+  if (inputType.value === 'sing' && !isSupportedOfflineSingFile(audioFile.value)) {
+    audioFile.value = null
+    audioFileError.value = t('offlineVideo.singFileUnsupported')
+    return
+  }
+  if (inputType.value === 'sing' && !singSongName.value.trim()) {
+    singSongNameError.value = t('offlineVideo.singSongNameRequired')
+    return
+  }
   submitting.value = true
+  singSongNameError.value = ''
   errorMessage.value = ''
   try {
     const createdJob = await createOfflineVideo(characterId.value, {
@@ -654,6 +823,11 @@ async function submitJob() {
       ttsPitch: ttsPitch.value,
       backgroundImageUrl: backgroundImageUrl.value.trim(),
       autoAnimoji: autoAnimoji.value,
+      actionPrompt: inputType.value === 'sing' && !actionPrompt.value.trim()
+        ? t('offlineVideo.defaultSingActionPrompt')
+        : actionPrompt.value.trim(),
+      title: buildAutoVideoTitleForSubmit(),
+      songName: inputType.value === 'sing' ? singSongName.value.trim() : '',
     })
     await refreshJobs()
     markJobHighlighted(createdJob.id)
@@ -694,6 +868,7 @@ async function submitRename(job: OfflineVideoJob) {
 async function removeJob(job: OfflineVideoJob) {
   if (!window.confirm(t('offlineVideo.deleteConfirm'))) return
   await deleteOfflineVideo(characterId.value, job.id)
+  pruneOfflineLiveLaunchJob(characterId.value, job.id)
   await refreshJobs()
 }
 
@@ -741,7 +916,7 @@ onUnmounted(() => {
     <AppHeader showBack :title="pageTitle" />
 
     <div class="py-6 text-center">
-      <div class="cv-pi-segment mx-auto h-11 w-[260px] grid-cols-2">
+      <div class="cv-pi-segment mx-auto h-11 w-[390px] max-w-[calc(100vw-48px)] grid-cols-3">
         <button class="cv-pi-segment-item cv-pi-segment-item--active" type="button">
           {{ t('offlineVideo.offlineMode') }}
         </button>
@@ -751,6 +926,15 @@ onUnmounted(() => {
           @click="router.push(`/launch/${characterId}/live`)"
         >
           {{ t('offlineVideo.liveMode') }}
+        </button>
+        <button
+          class="cv-pi-segment-item"
+          type="button"
+          :disabled="isViduCharacter || isExternalAvatarCharacter"
+          :title="isViduCharacter ? t('offlineVideo.viduUnsupported') : ''"
+          @click="router.push(`/launch/${characterId}/offline-live`)"
+        >
+          {{ t('offlineVideo.offlineLiveMode') }}
         </button>
       </div>
     </div>
@@ -795,7 +979,12 @@ onUnmounted(() => {
             <form class="generator-form" @submit.prevent="submitJob">
               <div v-if="errorMessage" class="notice error">{{ errorMessage }}</div>
 
-              <div class="cv-pi-segment h-[42px] w-[260px] grid-cols-2" role="tablist" :aria-label="t('offlineVideo.inputMode')">
+              <div
+                class="cv-pi-segment h-[42px]"
+                :class="showSingDrive ? 'w-[390px] grid-cols-3' : 'w-[260px] grid-cols-2'"
+                role="tablist"
+                :aria-label="t('offlineVideo.inputMode')"
+              >
                 <button
                   type="button"
                   class="cv-pi-segment-item"
@@ -812,6 +1001,15 @@ onUnmounted(() => {
                 >
                   {{ t('offlineVideo.audioInput') }}
                 </button>
+                <button
+                  v-if="showSingDrive"
+                  type="button"
+                  class="cv-pi-segment-item"
+                  :class="{ 'cv-pi-segment-item--active': inputType === 'sing' }"
+                  @click="inputType = 'sing'"
+                >
+                  {{ t('offlineVideo.singInput') }}
+                </button>
               </div>
 
               <template v-if="inputType === 'text'">
@@ -822,6 +1020,50 @@ onUnmounted(() => {
                   class="script-input"
                   :placeholder="t('offlineVideo.scriptPlaceholder')"
                 />
+              </template>
+
+              <template v-else-if="inputType === 'sing'">
+                <label class="field-label" for="offline-sing-name">{{ t('offlineVideo.singSongName') }}</label>
+                <input
+                  id="offline-sing-name"
+                  v-model="singSongName"
+                  class="action-prompt-input"
+                  type="text"
+                  required
+                  :placeholder="t('offlineVideo.singSongNamePlaceholder')"
+                  @input="singSongNameError = ''"
+                >
+                <p v-if="singSongNameError" class="field-error">{{ singSongNameError }}</p>
+                <p v-else-if="singVideoTitlePreview" class="field-hint">
+                  {{ t('offlineVideo.singVideoTitlePreview', { title: singVideoTitlePreview }) }}
+                </p>
+                <label class="field-label" for="offline-sing">{{ t('offlineVideo.singFile') }}</label>
+                <div class="audio-upload">
+                  <input
+                    id="offline-sing"
+                    class="audio-upload-input"
+                    type="file"
+                    :accept="singAccept"
+                    @change="handleAudioChange"
+                  >
+                  <label class="audio-upload-control" for="offline-sing">
+                    <span class="audio-upload-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M9 12V3.75M9 3.75L5.75 7M9 3.75L12.25 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M3.75 11.25V13.5C3.75 14.3284 4.42157 15 5.25 15H12.75C13.5784 15 14.25 14.3284 14.25 13.5V11.25" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                      </svg>
+                    </span>
+                    <span class="audio-upload-copy">
+                      <strong>{{ selectedAudioFileName }}</strong>
+                      <small>{{ selectedSingFileMeta }}</small>
+                    </span>
+                    <span class="audio-upload-action">
+                      {{ audioFile ? t('offlineVideo.changeAudioFile') : t('offlineVideo.chooseAudioFile') }}
+                    </span>
+                  </label>
+                </div>
+                <p v-if="audioFileError" class="field-error">{{ audioFileError }}</p>
+                <p class="field-hint">{{ t('offlineVideo.singHint') }}</p>
               </template>
 
               <template v-else-if="isBaiduXilingCharacter">
@@ -878,6 +1120,57 @@ onUnmounted(() => {
                   </button>
                 </div>
                 <template v-if="outputSettingsExpanded">
+                  <div class="action-prompt-block">
+                    <label class="action-prompt-label">{{ t('offlineVideo.actionPromptLabel') }}</label>
+                    <input
+                      v-model="actionPrompt"
+                      type="text"
+                      class="action-prompt-input"
+                      :placeholder="t('offlineVideo.actionPromptPlaceholder')"
+                    >
+                    <template v-if="inputType !== 'sing'">
+                      <div class="action-prompt-suggestions">
+                        <span class="action-prompt-suggestions-title">{{ t('offlineVideo.actionPromptSuggestionsTitle') }}</span>
+                        <div
+                          class="action-prompt-chip-row"
+                          :class="{ 'action-prompt-chip-row--locked': idlePromptSelectionLocked }"
+                        >
+                          <button
+                            v-for="item in idleActionPromptRefs"
+                            :key="item.promptKey"
+                            type="button"
+                            class="action-prompt-chip"
+                            :class="{ 'action-prompt-chip--active': isIdlePresetSelected(item) }"
+                            :disabled="idlePromptSelectionLocked"
+                            :title="t(item.promptKey)"
+                            @click="selectIdlePreset(item)"
+                          >
+                            {{ t(item.labelKey) }}
+                          </button>
+                        </div>
+                      </div>
+                      <div class="action-prompt-suggestions">
+                        <span class="action-prompt-suggestions-title">{{ t('offlineVideo.offlineLiveActionPromptsTitle') }}</span>
+                        <div
+                          class="action-prompt-chip-row"
+                          :class="{ 'action-prompt-chip-row--locked': actionPromptSelectionLocked }"
+                        >
+                          <button
+                            v-for="item in offlineLiveNamedActions"
+                            :key="item.promptKey"
+                            type="button"
+                            class="action-prompt-chip"
+                            :class="{ 'action-prompt-chip--active': isActionPresetSelected(item) }"
+                            :disabled="actionPromptSelectionLocked"
+                            :title="t(item.promptKey)"
+                            @click="selectActionPreset(item)"
+                          >
+                            {{ t(item.labelKey) }}
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
                   <div v-if="showLocalVideoOutputSettings" class="settings-section local-video-output-section">
                     <div class="settings-section-title-row settings-section-title-row--compact">
                       <h4 class="settings-section-title">{{ t('offlineVideo.videoOutputSettings') }}</h4>
@@ -1355,6 +1648,88 @@ onUnmounted(() => {
   border: 1px solid #242b36;
   background: #0b0d12;
   padding: 16px;
+}
+
+.action-prompt-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.action-prompt-label {
+  display: block;
+  color: #c5ccd6;
+  font-size: 13px;
+}
+
+.action-prompt-input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: #1a1a2e;
+  color: #fff;
+}
+
+.action-prompt-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.action-prompt-suggestions-title {
+  color: #798394;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.action-prompt-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.action-prompt-chip {
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: #10141b;
+  color: #d7dde6;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.35;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.action-prompt-chip:hover {
+  border-color: rgba(143, 232, 239, 0.35);
+  background: rgba(52, 230, 243, 0.06);
+}
+
+.action-prompt-chip--active {
+  border-color: rgba(52, 230, 243, 0.65);
+  background: rgba(52, 230, 243, 0.12);
+  color: #8fe8ef;
+}
+
+.action-prompt-chip-row--locked {
+  opacity: 0.45;
+}
+
+.action-prompt-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.action-prompt-chip:disabled:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: #10141b;
 }
 
 .settings-header {

@@ -31,10 +31,13 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
 
 // ── Sessions (existing) ──
 
+export type PlaybackMode = 'offline_live'
+
 export interface CreateSessionResponse {
   session_id: string
   mode: PipelineMode
   streaming_mode: string  // "direct" or "livekit"
+  playback_mode?: PlaybackMode | string
   avatar_enabled?: boolean
   idle_strategy?: 'cached_video' | 'silent_inference'
   audio_input?: {
@@ -78,6 +81,12 @@ export interface CreateSessionResponse {
   livekit_token?: string
   idle_video_url?: string
   idle_video_urls?: string[]
+  offline_live_actions?: Array<{ id: string; title: string; url: string }>
+  offline_live_songs?: Array<{ id: string; title: string; url: string }>
+  danmaku_platform?: string
+  bilibili_room_id?: number
+  douyin_room?: string
+  douyin_relay?: string
   idle_image_url?: string
   warnings?: string[]
   visual_input?: {
@@ -105,15 +114,109 @@ export interface HealthResponse {
   error?: string
 }
 
-export async function createSession(characterId: string, mode: PipelineMode = 'standard'): Promise<CreateSessionResponse> {
+export interface CreateSessionPipelineOptions {
+  llmProvider?: string
+  llmModel?: string
+  ttsProvider?: string
+  ttsModel?: string
+  ttsVoice?: string
+  idleVideoUrl?: string
+  offlineLiveActions?: Array<{ id: string; title: string; url: string }>
+  offlineLiveSongs?: Array<{ id: string; title: string; url: string }>
+  danmakuPlatform?: 'none' | 'bilibili' | 'douyin' | string
+  bilibiliRoomId?: number
+  douyinRoom?: string
+  douyinRelay?: string
+}
+
+export async function createSession(
+  characterId: string,
+  mode: PipelineMode = 'standard',
+  playbackMode?: PlaybackMode | string,
+  pipeline?: CreateSessionPipelineOptions,
+): Promise<CreateSessionResponse> {
+  const body: Record<string, unknown> = { character_id: characterId, mode }
+  if (playbackMode) {
+    body.playback_mode = playbackMode
+  }
+  if (pipeline?.llmProvider) body.llm_provider = pipeline.llmProvider
+  if (pipeline?.llmModel) body.llm_model = pipeline.llmModel
+  if (pipeline?.ttsProvider) body.tts_provider = pipeline.ttsProvider
+  if (pipeline?.ttsModel) body.tts_model = pipeline.ttsModel
+  if (pipeline?.ttsVoice) body.tts_voice = pipeline.ttsVoice
+  if (pipeline?.idleVideoUrl) body.idle_video_url = pipeline.idleVideoUrl
+  if (pipeline?.offlineLiveActions?.length) body.offline_live_actions = pipeline.offlineLiveActions
+  if (pipeline?.offlineLiveSongs?.length) body.offline_live_songs = pipeline.offlineLiveSongs
+  if (pipeline?.danmakuPlatform && pipeline.danmakuPlatform !== 'none') {
+    body.danmaku_platform = pipeline.danmakuPlatform
+  }
+  if (typeof pipeline?.bilibiliRoomId === 'number' && pipeline.bilibiliRoomId > 0) {
+    body.bilibili_room_id = pipeline.bilibiliRoomId
+  }
+  if (pipeline?.douyinRoom) body.douyin_room = pipeline.douyinRoom
+  if (pipeline?.douyinRelay) body.douyin_relay = pipeline.douyinRelay
   return request('/sessions', {
     method: 'POST',
-    body: JSON.stringify({ character_id: characterId, mode }),
+    body: JSON.stringify(body),
   })
 }
 
 export async function getComponents(): Promise<ComponentsResponse> {
   return request('/components')
+}
+
+export async function connectDanmaku(sessionId: string): Promise<{ status: string }> {
+  return request(`/sessions/${encodeURIComponent(sessionId)}/danmaku/connect`, {
+    method: 'POST',
+    body: '{}',
+  })
+}
+
+export async function reconnectDanmaku(sessionId: string): Promise<{ status: string }> {
+  return connectDanmaku(sessionId)
+}
+
+export async function disconnectDanmaku(sessionId: string): Promise<{ status: string }> {
+  return request(`/sessions/${encodeURIComponent(sessionId)}/danmaku/disconnect`, {
+    method: 'POST',
+    body: '{}',
+  })
+}
+
+export interface DanmakuFeedSnapshotItem {
+  username: string
+  text: string
+  source: string
+  message_id?: string
+  timestamp: number
+}
+
+export async function fetchDanmakuFeed(sessionId: string): Promise<{
+  items: DanmakuFeedSnapshotItem[]
+  status: string
+  platform?: string
+}> {
+  return request(`/sessions/${encodeURIComponent(sessionId)}/danmaku/feed`)
+}
+
+export async function triggerOfflineLiveAction(
+  sessionId: string,
+  body: { action?: string; action_id?: string; clear?: boolean },
+): Promise<{ status: string; action_id?: string; title?: string; url?: string; cleared?: boolean }> {
+  return request(`/sessions/${encodeURIComponent(sessionId)}/offline-live/action`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function triggerOfflineLiveSong(
+  sessionId: string,
+  body: { title?: string; song_id?: string; stop?: boolean },
+): Promise<{ status: string; song_id?: string; title?: string; url?: string; stopped?: boolean }> {
+  return request(`/sessions/${encodeURIComponent(sessionId)}/offline-live/song`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
 }
 
 export async function deleteSession(sessionId: string, keepalive = false): Promise<void> {
@@ -179,7 +282,7 @@ export function getTaskArtifactUrl(taskId: string, artifactId: string): string {
 // ── Offline Videos ──
 
 export interface CreateOfflineVideoInput {
-  inputType: 'text' | 'audio'
+  inputType: 'text' | 'audio' | 'sing'
   text?: string
   audio?: File | null
   inputAudioUrl?: string
@@ -196,6 +299,9 @@ export interface CreateOfflineVideoInput {
   ttsPitch?: number
   backgroundImageUrl?: string
   autoAnimoji?: boolean
+  actionPrompt?: string
+  title?: string
+  songName?: string
 }
 
 export async function listOfflineVideos(characterId: string): Promise<{ videos: OfflineVideoJob[] }> {
@@ -221,6 +327,9 @@ export async function createOfflineVideo(characterId: string, input: CreateOffli
   if (typeof input.ttsPitch === 'number') form.append('tts_pitch', String(input.ttsPitch))
   if (input.backgroundImageUrl) form.append('background_image_url', input.backgroundImageUrl)
   if (typeof input.autoAnimoji === 'boolean') form.append('auto_animoji', String(input.autoAnimoji))
+  if (input.actionPrompt) form.append('actionPrompt', input.actionPrompt)
+  if (input.title) form.append('title', input.title)
+  if (input.songName) form.append('song_name', input.songName)
   const res = await fetch(`${API_BASE}/characters/${encodeURIComponent(characterId)}/offline-videos`, {
     method: 'POST',
     body: form,

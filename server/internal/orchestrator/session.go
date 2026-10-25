@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -45,6 +46,26 @@ const (
 	ModeVoiceLLM = ModeOmni
 )
 
+// PlaybackMode controls how avatar video is delivered to the client.
+type PlaybackMode string
+
+const (
+	// PlaybackModeRealtime streams avatar frames over WebRTC (default Live).
+	PlaybackModeRealtime PlaybackMode = ""
+	// PlaybackModeOfflineLive keeps Live dialogue, but plays pre-generated
+	// idle/answer MP4s on the frontend with fade transitions.
+	PlaybackModeOfflineLive PlaybackMode = "offline_live"
+)
+
+func NormalizePlaybackMode(mode string) PlaybackMode {
+	switch strings.TrimSpace(mode) {
+	case string(PlaybackModeOfflineLive):
+		return PlaybackModeOfflineLive
+	default:
+		return PlaybackModeRealtime
+	}
+}
+
 type ChatMessage struct {
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
@@ -81,6 +102,7 @@ type Session struct {
 	OwnerID        string `json:"-"`
 	state          SessionState
 	Mode           PipelineMode        `json:"mode"`
+	PlaybackMode   PlaybackMode        `json:"playback_mode,omitempty"`
 	History        []ChatMessage       `json:"history"`
 	DialogContext  []DialogContextItem `json:"-"`
 	CreatedAt      time.Time           `json:"created_at"`
@@ -100,7 +122,49 @@ type Session struct {
 	RecordingDir string      `json:"-"`
 	Visual       VisualState `json:"-"`
 	visualSubs   map[chan VisualFrame]struct{}
-	mu           sync.RWMutex
+	// Optional overrides for standard LLM→TTS pipeline (offline live launch).
+	StandardLLMProvider string `json:"-"`
+	StandardLLMModel    string `json:"-"`
+	StandardTTSProvider string `json:"-"`
+	StandardTTSModel    string `json:"-"`
+	StandardTTSVoice    string `json:"-"`
+	OfflineLiveIdleVideoURL string                  `json:"-"`
+	OfflineLiveActions      []OfflineLiveActionClip `json:"-"`
+	OfflineLiveSongs        []OfflineLiveActionClip `json:"-"`
+	DanmakuPlatform         string                  `json:"-"`
+	DanmakuBilibiliRoomID   int                     `json:"-"`
+	DanmakuDouyinRoom       string                  `json:"-"`
+	DanmakuDouyinRelay      string                  `json:"-"`
+	mu                      sync.RWMutex
+}
+
+func (s *Session) IsOfflineLive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.PlaybackMode == PlaybackModeOfflineLive
+}
+
+func (s *Session) SetPlaybackMode(mode PlaybackMode) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PlaybackMode = NormalizePlaybackMode(string(mode))
+}
+
+// SetStandardPipelineOverrides configures LLM/TTS providers for standard-mode sessions.
+func (s *Session) SetStandardPipelineOverrides(llmProvider, llmModel, ttsProvider, ttsModel, ttsVoice string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.StandardLLMProvider = strings.TrimSpace(llmProvider)
+	s.StandardLLMModel = strings.TrimSpace(llmModel)
+	s.StandardTTSProvider = strings.TrimSpace(ttsProvider)
+	s.StandardTTSModel = strings.TrimSpace(ttsModel)
+	s.StandardTTSVoice = strings.TrimSpace(ttsVoice)
 }
 
 func NewSession(id string, mode PipelineMode, characterID string) *Session {

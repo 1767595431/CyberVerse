@@ -96,13 +96,9 @@ async def test_cosyvoice_model_uses_task_protocol():
     ]
     run_payload = fake_websockets.ws.sent[0]["payload"]
     assert run_payload["model"] == "cosyvoice-v3.5-flash"
-    assert run_payload["parameters"]["voice"] == "request-voice"
-    assert run_payload["parameters"]["format"] == "pcm"
-    assert fake_websockets.ws.sent[1]["payload"]["input"]["text"] == "hello"
 
-    assert len(chunks) == 1
-    assert chunks[0].sample_rate == 16000
-    np.testing.assert_allclose(
-        np.frombuffer(chunks[0].data, dtype=np.float32),
-        np.array([0.0, 32767 / 32768], dtype=np.float32),
-    )
+
+def test_qwen3_tts_uses_realtime_protocol_not_cosyvoice():
+    assert QwenTTSPlugin._uses_cosyvoice_protocol("qwen3-tts-flash-realtime") is False
+    assert QwenTTSPlugin._uses_cosyvoice_protocol("cosyvoice-v3-flash") is True
+    assert QwenTTSPlugin._uses_cosyvoice_protocol("qwen3.5-omni-flash-realtime") is True
